@@ -49,7 +49,9 @@ ui <- fluidPage(
                        }.progress-bar{color:black; background-color:#66cc99;}")),
                            fileInput("sample_info_upload", paste0("Load sample information"), accept = c(".csv")),
                            
-                         ), 
+                          
+                           
+                           ), 
                          
                          
                          mainPanel(tabsetPanel(
@@ -75,14 +77,30 @@ ui <- fluidPage(
                            
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           fileInput("upload", paste0("Load counts data"), accept = c(".csv")),
+                           fileInput("count_info_upload", paste0("Load counts data"), accept = c(".csv")),
+                           
+                           #Slider to include genes with at least X percentile of variance
+                           tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                           sliderInput("var_range", "Select the minimum percentile of variance:",
+                                       min = 0, max = 100,
+                                       value = 50),
+                           
+                           #Slider to include genes with at least X samples that are non-zero
+                           tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                           sliderInput("count_range", "Select the non-zero sample threshold for genes:",
+                                       min = 0, max = 69,
+                                       value = 0),
+                           
+                           #action button 
+                           actionButton("do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
+                           
                            
                          ), 
                          
                          
                          mainPanel(tabsetPanel(
                            
-                           tabPanel("Summary"),
+                           tabPanel("Summary", DTOutput("count_info_summary_table")),
                            
                            tabPanel("Scatter Plots",
                            ),
@@ -115,9 +133,7 @@ ui <- fluidPage(
                            
                            tabPanel("DE Results"),
                            
-                           tabPanel("Plot",
-                                    
-                           )
+                           tabPanel("Plot",)
                            
                          )) 
                        ),
@@ -161,15 +177,17 @@ ui <- fluidPage(
 
 
 
-# Define server logic 
+# Define server logic
 server <- function(input, output) {
-  
+
   options(shiny.maxRequestSize = 30 * 1024^2) #set file size limit high so you don't exceed limit
+  
+  ##SAMPLE INFO
   
   #' sample_info_data
   #'@details loads sample information dataframe
   
-  sample_info_data <- reactive({ 
+  sample_info_data <- reactive({
     
     req(input$sample_info_upload)
     df <- read.csv(input$sample_info_upload$datapath, stringsAsFactors = FALSE)
@@ -179,7 +197,7 @@ server <- function(input, output) {
   })
   
   
-  #' sample_info_summary 
+  #' sample_info_summary
   #'@details takes sample information data, creates special summary table with means of continuous variables
   
   
@@ -213,6 +231,12 @@ server <- function(input, output) {
   }
   
   
+  #sample info summary tab
+  output$sample_info_summary_table <- renderDT({
+    sample_info_summary()
+    
+  })
+  
   
   
   #' sample_data_table
@@ -227,6 +251,11 @@ server <- function(input, output) {
     datatable(sample_data_df, rownames = FALSE, options = list(pageLength = nrow(sample_data_df)))
   }
   
+  #sample data table
+  output$sample_data <- renderDT({
+    sample_data_table()
+    
+  })
   
   #' continuous_sample_histograms
   #'@details creates histogram plots of continuous variables in the input sample data frame
@@ -241,9 +270,7 @@ server <- function(input, output) {
       
       select_if(is.numeric)%>%
       
-      gather() 
-    
-    print(continuous_data_df)
+      gather()
     
     
     ggplot(gather(continuous_data_df), aes(value, fill = key))+
@@ -252,20 +279,6 @@ server <- function(input, output) {
     
     
   }
-  
-  
-  
-  #sample info summary tab
-  output$sample_info_summary_table <- renderDT({
-    sample_info_summary()
-    
-  })
-  
-  #sample data table
-  output$sample_data <- renderDT({
-    sample_data_table()
-    
-  })
   
   
   #sample summary histograms
@@ -277,9 +290,63 @@ server <- function(input, output) {
   })
   
   
+  ##COUNTS INFORMATION
+  
+  #' counts_data
+  #'@details loads RNA counts data frame
+  
+  counts_data <- reactive({
+    
+    req(input$count_info_upload)
+    count_df <- read.csv(input$count_info_upload$datapath, stringsAsFactors = FALSE)
+    
+    return(count_df)
+    
+  })
+  
+  #' counts_summary_table
+  #'@details creates table that summarizes effects of counts filtering, including:
+  #'number of samples, total number of genes, number and % of genes passing current filter,
+  #'number and % of genes not passing current filter
+
+  counts_summary_table <- function(count_info_data, var_filter, count_filter){
+
+    count_df <- counts_data() 
+    
+    
+    filtered_counts <- count_df %>%
+      
+      filter(
+        rowSums(count_df != 0) > count_filter &
+          apply(count_df, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+        
+      )
+
+  #create new tibble with all the info we want
+  count_summary_tib <- tibble(
+
+    "Number of Samples" = ncol(filtered_counts),
+    "Total Number of Genes" = nrow(filtered_counts)#,
+    # "Number and % of Genes Passing Filters" = ,
+    # "Number and % of Genes Not Passing Filters" =
+  )
+
+  datatable(count_summary_tib, rownames = FALSE)
 }
 
 
+#counts info summary tab
+output$count_info_summary_table <- renderDT({
+  
+  input$do #need to do this to link slider input to action button
+  
+  counts_summary_table(count_info_data = counts_data(), var_filter = isolate(input$var_range), count_filter = isolate(input$count_range))
+  
+})
+
+
+
+}
 
 # Run the application 
 shinyApp(ui = ui, server = server)
