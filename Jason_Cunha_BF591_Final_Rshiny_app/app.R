@@ -309,6 +309,8 @@ server <- function(input, output) {
   #'number of samples, total number of genes, number and % of genes passing current filter,
   #'number and % of genes not passing current filter
 
+  
+  
   counts_summary_table <- function(count_info_data, var_filter, count_filter){
 
     count_df <- counts_data() 
