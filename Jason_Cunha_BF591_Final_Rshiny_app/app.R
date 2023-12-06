@@ -17,6 +17,7 @@ library(bslib)
 library(ggplot2)
 library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
+library(patchwork) #used for creating multi-panel figures
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -102,7 +103,7 @@ ui <- fluidPage(
                            
                            tabPanel("Summary", DTOutput("count_info_summary_table")),
                            
-                           tabPanel("Scatter Plots",
+                           tabPanel("Scatter Plots", plotOutput("count_summary_scatters")
                            ),
                            
                            tabPanel("Heatmap",
@@ -338,14 +339,49 @@ server <- function(input, output) {
 
 
 #counts info summary tab
-output$count_info_summary_table <- renderDT({
-  
-  input$do #need to do this to link slider input to action button
-  
-  counts_summary_table(count_info_data = counts_data(), var_filter = isolate(input$var_range), count_filter = isolate(input$count_range))
-  
+  output$count_info_summary_table <- renderDT({
+    
+    input$do #need to do this to link slider input to action button
+    
+    counts_summary_table(count_info_data = counts_data(), var_filter = isolate(input$var_range), count_filter = isolate(input$count_range))
+    
 })
 
+  #' counts_diagnostic_scatterplots
+  #'@details creates two scatter plots that show genes ranked by median count vs. log10(variance) and
+  #' genes ranked by median count vs. number of zeros for each gene that passes the filters. Genes
+  #' Passing filters are in darker colors, filtered genes in lighter color
+  
+  
+  counts_diagnostic_scatterplots <- function(count_info_data, var_filter, count_filter, color_1, color_2){
+    
+    #creating a tibble storing the gene medians, variances, the sum of zero 
+    #counts for each gene, and rankings
+    
+    result_tib <- count_info_data %>%
+      
+      tibble("gene_count_medians" = apply(select(.,-1), 1, median),
+             "gene_variance" = apply(select(.,-1), 1, var),
+             "sum_zero_counts" = apply(select(.,-1) == 0, 1, sum),
+             "ranked_medians" = rank(gene_count_medians))
+    
+    
+    
+    med_var_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = log10(gene_variance)))+
+      geom_point()
+  
+    med_zeros_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = sum_zero_counts))+
+      geom_point()
+    
+    med_var_scatter / med_zeros_scatter #create figure with both scatter plots
+    
+  }
+  
+  output$count_summary_scatters <- renderPlot({
+    
+    counts_diagnostic_scatterplots(count_info_data = counts_data())
+    
+  })
 
 
 }
