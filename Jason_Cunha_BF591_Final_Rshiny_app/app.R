@@ -18,6 +18,7 @@ library(ggplot2)
 library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
+library(pheatmap) #used for creating clustered counts heatmap
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -92,6 +93,12 @@ ui <- fluidPage(
                                        min = 0, max = 69,
                                        value = 0),
                            
+                           #adding two bars to select the passed and failed count filter colors
+                           h5("Genes Passing Filters Color"),
+                           colourInput("count_passed_filter_color",NULL, "#22577A"), #base point color
+                           h5("Genes Not Passing Filters Color"),
+                           colourInput("count_failed_filter_color", NULL, "#FFCF56"), #highlight point color
+                           
                            #action button 
                            actionButton("do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
                            
@@ -106,10 +113,10 @@ ui <- fluidPage(
                            tabPanel("Scatter Plots", plotOutput("count_summary_scatters")
                            ),
                            
-                           tabPanel("Heatmap",
+                           tabPanel("Heatmap", plotOutput("count_heat")
                            ),
                            
-                           tabPanel("PCA",
+                           tabPanel("PCA", plotOutput("count_pca")
                            )
                            
                          )) 
@@ -316,6 +323,7 @@ server <- function(input, output) {
 
     count_df <- counts_data() 
     
+    #filtering step
     
     filtered_counts <- count_df %>%
       
@@ -363,25 +371,145 @@ server <- function(input, output) {
       tibble("gene_count_medians" = apply(select(.,-1), 1, median),
              "gene_variance" = apply(select(.,-1), 1, var),
              "sum_zero_counts" = apply(select(.,-1) == 0, 1, sum),
-             "ranked_medians" = rank(gene_count_medians))
+             "ranked_medians" = rank(gene_count_medians)
+             
+             
+             )
     
-    
-    
+
     med_var_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = log10(gene_variance)))+
-      geom_point()
-  
+      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter &
+                                      apply(count_info_data, 1, function(row) quantile(row, prob = var_filter / 100) > 0),
+                                    "Passed", "Filtered Out")))+
+      scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
+      theme_bw()
+
     med_zeros_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = sum_zero_counts))+
-      geom_point()
-    
+      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter &
+                                      apply(count_info_data, 1, function(row) quantile(row, prob = var_filter / 100) > 0),
+                                    "Passed", "Filtered Out")))+
+      scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
+      theme_bw()
+
     med_var_scatter / med_zeros_scatter #create figure with both scatter plots
-    
+
   }
   
   output$count_summary_scatters <- renderPlot({
     
-    counts_diagnostic_scatterplots(count_info_data = counts_data())
+    input$do #connects slider input to action buttion
+    
+    counts_diagnostic_scatterplots(count_info_data = counts_data(),
+                                   var_filter = isolate(input$var_range), 
+                                   count_filter = isolate(input$count_range),
+                                   color_1 = isolate(input$count_passed_filter_color),
+                                   color_2 = isolate(input$count_failed_filter_color))
     
   })
+  
+  #' counts_filtered_heatmap
+  #'@details creates a clustered heatmap of counts remaining after filtering. Counts
+  #'are log10-transformed before plotting
+
+  # 
+  # counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
+  #   
+  #   #remove na's, filtering step
+  #   
+  #   count_no_na <- na.omit(count_info_data)
+  #   
+  #   filtered_counts <- count_no_na %>%
+  #     
+  #     filter(
+  #       rowSums(count_no_na != 0) > count_filter &
+  #         apply(count_no_na, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+  #       
+  #     )
+  #   
+  #   #log10 transform the matrix
+  #   
+  #   log_transformed_counts <- log10(filtered_counts)
+  #   
+  #   #make heatmap
+  #   
+  #   heatmap(log_transformed_counts,
+  #            color = colorRampPalette(c("white", "blue"))(100),
+  #            show_colnames = FALSE)
+  #   
+  #   
+  # }
+  # 
+  # 
+  # output$count_heat <- renderPlot({
+  #   
+  #   input$do #connects slider input to action button
+  #   
+  #   counts_filtered_heatmap(count_info_data = counts_data(),
+  #                                  var_filter = isolate(input$var_range), 
+  #                                  count_filter = isolate(input$count_range))
+  #   
+  # })
+  
+  
+  
+  #' counts_pca_plot
+  #'@details conducts principal components analysis (PCA) and generates a scatterplot
+  #' of PCA results for filtered counts
+  
+  #'
+  #' @param data tibble: a (n x _S_) data set
+  #' @param meta tibble: sample-level meta information (_S_ x 3)
+  #' @param title string: title for plot
+  #'
+  #' @return ggplot: scatter plot showing each sample in the first two PCs.
+  #'
+  #' @examples
+  #' `plot_pca(data, meta, "Raw Count PCA")`
+  
+  counts_pca_plot <- function(count_info_data, meta, title="") {
+    
+    #put samples in rows
+
+    
+    #   #do pca
+    pca <- prcomp(
+      t(count_info_data),
+      center = TRUE,
+      scale = FALSE
+    )
+    
+    
+    #getting pca output and metadata, merging them together by sample names
+
+    pca_output <- data.frame(pca$x[,1:10]) 
+    
+    #%>%
+      # tibble::rownames_to_column('sample_info') %>%
+      # left_join(., meta, by = c('sample_info' = 'sample'))
+
+    ##incorporate variance_explained in x and y axis labels
+    var_explained <- (pca$sdev)^2/sum((pca$sdev)^2) * 100
+    
+    #make plot
+    
+    pca_gg <- ggplot(pca_output, aes(x=PC1,y=PC2)) +
+      geom_point()+
+      labs(x = paste0('PC1: ', round(var_explained[1],0), '% variance'), 
+           y = paste0('PC2: ', round(var_explained[2],0), '% variance'), 
+           title = title)
+    
+    pca_gg
+  }
+  
+  
+  output$count_pca <- renderPlot({
+
+      input$do #connects slider input to action button
+
+      counts_pca_plot(count_info_data = counts_data())
+
+    })
+  
 
 
 }
