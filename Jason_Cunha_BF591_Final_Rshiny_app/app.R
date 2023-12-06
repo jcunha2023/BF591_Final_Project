@@ -32,7 +32,7 @@ ui <- fluidPage(
   
   #page headings
   h1("BF591 Final Project"),
-  h4("Comparisons of gene expression profiles between post-mortem Huntington’s Disease prefrontal cortex compared with neurologically healthy controls (Labadorf et al. 2015)."),
+  h4("Comparisons of gene expression profiles between post-mortem Huntington’s Disease prefrontal cortex compared with neurologically healthy controls (Labadorf et al., 2015)."),
   
   
   #creating separate main panels for plot and table
@@ -327,10 +327,10 @@ server <- function(input, output) {
   #create new tibble with all the info we want
   count_summary_tib <- tibble(
 
-    "Number of Samples" = ncol(filtered_counts),
-    "Total Number of Genes" = nrow(filtered_counts)#,
-    # "Number and % of Genes Passing Filters" = ,
-    # "Number and % of Genes Not Passing Filters" =
+    "Number of Samples" = ncol(count_df),
+    "Total Number of Genes" = nrow(count_df),
+    "Number and % of Genes Passing Filters" = paste0(nrow(filtered_counts), " ( ", round((nrow(filtered_counts)/nrow(count_df))*100, 2), "%)"),
+    "Number and % of Genes Not Passing Filters" =  paste0(nrow(count_df) - nrow(filtered_counts), " ( ", round(((nrow(count_df) - nrow(filtered_counts))/nrow(count_df))*100, 2), "%)")
   )
 
   datatable(count_summary_tib, rownames = FALSE)
