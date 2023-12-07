@@ -116,8 +116,29 @@ ui <- fluidPage(
                            tabPanel("Heatmap", plotOutput("count_heat")
                            ),
                            
-                           tabPanel("PCA", plotOutput("count_pca")
-                           )
+                           tabPanel("PCA", fluidRow(sidebarPanel(
+                                    
+                                    
+                                    #radio buttons to select which principal components to plot on x and y axes
+                                    
+                                    radioButtons("pca_x_axis", "Choose which principal component to plot on the x-axis",
+                                                 c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6",
+                                                   "PC7", "PC8", "PC9", "PC10"), selected = "PC1"),
+                                    
+                                    radioButtons("pca_y_axis", "Choose which principal component to plot on the y-axis",
+                                                 c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6",
+                                                   "PC7", "PC8", "PC9", "PC10"), selected = "PC2"),
+                                    
+                                    #action button for pca plot
+                                    #action button 
+                                    actionButton("pca_plot_do", "Plot", width = "100%", icon = icon("brush"), style = "color: black; background-color: #6FCFD1; border-color: #6FCFD1")
+                                    
+                                    
+                                    
+                                    ),
+                                    #Plot PCA
+                                    column(8, plotOutput("count_pca"))
+                           ))
                            
                          )) 
                        ),
@@ -306,7 +327,7 @@ server <- function(input, output) {
   counts_data <- reactive({
     
     req(input$count_info_upload)
-    count_df <- read.csv(input$count_info_upload$datapath, stringsAsFactors = FALSE)
+    count_df <- read.csv(input$count_info_upload$datapath, stringsAsFactors = FALSE, row.names = 1)
     
     return(count_df)
     
@@ -411,45 +432,55 @@ server <- function(input, output) {
   #'@details creates a clustered heatmap of counts remaining after filtering. Counts
   #'are log10-transformed before plotting
 
-  # 
-  # counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
-  #   
-  #   #remove na's, filtering step
-  #   
-  #   count_no_na <- na.omit(count_info_data)
-  #   
-  #   filtered_counts <- count_no_na %>%
-  #     
-  #     filter(
-  #       rowSums(count_no_na != 0) > count_filter &
-  #         apply(count_no_na, 1, function(row) quantile (row, prob = var_filter/100) > 0)
-  #       
-  #     )
-  #   
-  #   #log10 transform the matrix
-  #   
-  #   log_transformed_counts <- log10(filtered_counts)
-  #   
-  #   #make heatmap
-  #   
-  #   heatmap(log_transformed_counts,
-  #            color = colorRampPalette(c("white", "blue"))(100),
-  #            show_colnames = FALSE)
-  #   
-  #   
-  # }
-  # 
-  # 
-  # output$count_heat <- renderPlot({
-  #   
-  #   input$do #connects slider input to action button
-  #   
-  #   counts_filtered_heatmap(count_info_data = counts_data(),
-  #                                  var_filter = isolate(input$var_range), 
-  #                                  count_filter = isolate(input$count_range))
-  #   
-  # })
+
+counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   
+
+#   #remove na's, filtering step, convert to matrix
+
+
+
+  filtered_counts <- count_info_data %>%
+
+    filter(
+      rowSums(count_info_data != 0) > count_filter &
+        apply(count_info_data, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+
+    ) 
+
+  filtered_counts_matrix <- as.matrix(filtered_counts)
+
+  #log10 transform the matrix
+
+  # log_transformed_counts <- log10(filtered_counts)
+  # 
+  # any(is.na(log_transformed_counts))
+  # any(is.infinite(log_transformed_counts))
+  
+  
+  # Assuming filtered_counts is your original matrix
+  
+  # Subset the matrix to include all columns and the first 30 rows
+  subset_counts <- filtered_counts_matrix[1:30, ]
+  
+  # Make heatmap with the subset
+  heatmap(as.matrix(subset_counts), color = colorRampPalette(c("white", "blue"))(100), show_colnames = FALSE)
+  
+
+
+}
+
+
+output$count_heat <- renderPlot({
+
+  input$do #connects slider input to action button
+
+  counts_filtered_heatmap(count_info_data = counts_data(),
+                                 var_filter = isolate(input$var_range),
+                                 count_filter = isolate(input$count_range))
+
+})
+
   
   
   #' counts_pca_plot
@@ -466,47 +497,59 @@ server <- function(input, output) {
   #' @examples
   #' `plot_pca(data, meta, "Raw Count PCA")`
   
-  counts_pca_plot <- function(count_info_data, meta, title="") {
+  counts_pca_plot <- function(count_info_data, x_axis, y_axis, title="") {
     
     #put samples in rows
 
-    
-    #   #do pca
+
+      #do pca on transposed counts matrix (samples as rows, columns as genes)
     pca <- prcomp(
       t(count_info_data),
       center = TRUE,
       scale = FALSE
     )
-    
-    
+
+
     #getting pca output and metadata, merging them together by sample names
 
-    pca_output <- data.frame(pca$x[,1:10]) 
-    
-    #%>%
-      # tibble::rownames_to_column('sample_info') %>%
-      # left_join(., meta, by = c('sample_info' = 'sample'))
+    pca_output <- data.frame(pca$x[,1:10])
 
-    ##incorporate variance_explained in x and y axis labels
+
+
+    #incorporate variance_explained in x and y axis labels
     var_explained <- (pca$sdev)^2/sum((pca$sdev)^2) * 100
     
-    #make plot
+    #extract selected principal components for the x and y axes
     
-    pca_gg <- ggplot(pca_output, aes(x=PC1,y=PC2)) +
-      geom_point()+
-      labs(x = paste0('PC1: ', round(var_explained[1],0), '% variance'), 
-           y = paste0('PC2: ', round(var_explained[2],0), '% variance'), 
+    x_index <- as.numeric(sub("PC","",x_axis))
+    y_index <- as.numeric(sub("PC","",y_axis))
+    
+    x_component <- var_explained[x_index]
+    y_component <- var_explained[y_index]
+
+    # #make plot
+
+    pca_gg <- ggplot(pca_output, aes(x=!!sym(x_axis),y=!!sym(y_axis))) +
+      geom_point(color = "#4FB0F5")+
+      theme_bw()+
+      theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+      
+      labs(x = paste0(x_axis,': ', round(x_component,1), '% variance'),
+           y = paste0(y_axis, ': ', round(y_component,1), '% variance'),
            title = title)
-    
-    pca_gg
+
+    return(pca_gg)
   }
   
   
   output$count_pca <- renderPlot({
 
-      input$do #connects slider input to action button
+      input$pca_plot_do #connects slider input to action button
 
-      counts_pca_plot(count_info_data = counts_data())
+      counts_pca_plot(count_info_data = counts_data(), 
+                      x_axis = isolate(input$pca_x_axis),
+                      y_axis = isolate(input$pca_y_axis))
 
     })
   
