@@ -19,6 +19,8 @@ library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
 library(pheatmap) #used for creating clustered counts heatmap
+library(reshape) #used for "melting" counts data to make heatmap
+library(ggplotify) ## to convert pheatmap to ggplot2
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -79,7 +81,7 @@ ui <- fluidPage(
                            
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           fileInput("count_info_upload", paste0("Load counts data"), accept = c(".csv")),
+                           fileInput("count_info_upload", paste0("Load counts data"), accept = c(".csv", ".tsv")),
                            
                            #Slider to include genes with at least X percentile of variance
                            tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
@@ -153,16 +155,35 @@ ui <- fluidPage(
                            
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           fileInput("upload", paste0("Load differential expression results"), accept = c(".csv")),
+                           fileInput("deseq_upload", paste0("Load differential expression results"), accept = c(".csv", ".tsv")),
                            
-                         ), 
-                         
+                           
+                           #Slider select the adjusted p-value filter
+                           tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                           sliderInput("padj_range", "Select the Adjusted P-Value Filtering Threshold:",
+                                       min = 0, max = 1,
+                                       value = 0.1),
+                           actionButton("deseq_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
+                         ),  
                          
                          mainPanel(tabsetPanel(
                            
-                           tabPanel("DE Results"),
+                           tabPanel("DE Results", DTOutput("deseq_tab")),
                            
-                           tabPanel("Plot",)
+                           tabPanel("Plots",
+                                    
+                                    tabsetPanel(
+                                    tabPanel("Raw P-Values Histogram", plotOutput("pval_hist")),
+                                    
+                                    tabPanel("Log2 Fold-Changes Histogram", plotOutput("logfc_hist")),
+                                    
+                                    tabPanel("Top 10 Normalized Counts",),
+                                    
+                                    tabPanel("Volcano Plot of DE Results", plotOutput("volc_plot")))
+                                    
+                                    
+                                    
+                                    )
                            
                          )) 
                        ),
@@ -177,7 +198,7 @@ ui <- fluidPage(
                            
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           fileInput("upload", paste0("Load FGSEA results"), accept = c(".csv")),
+                           fileInput("upload", paste0("Load FGSEA results"), accept = c(".csv", ".tsv")),
                            
                          ), 
                          
@@ -269,7 +290,7 @@ server <- function(input, output) {
   
   
   #' sample_data_table
-  #'@details takes sample information data, displays it i a sortable table
+  #'@details takes sample information data, displays it as a sortable table
   
   
   sample_data_table <- function(sum_data){
@@ -436,9 +457,7 @@ server <- function(input, output) {
 counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   
 
-#   #remove na's, filtering step, convert to matrix
-
-
+#  filtering step, convert to matrix, do log10 transformation
 
   filtered_counts <- count_info_data %>%
 
@@ -449,24 +468,37 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
     ) 
 
   filtered_counts_matrix <- as.matrix(filtered_counts)
-
-  #log10 transform the matrix
-
-  # log_transformed_counts <- log10(filtered_counts)
-  # 
-  # any(is.na(log_transformed_counts))
-  # any(is.infinite(log_transformed_counts))
   
-  
-  # Assuming filtered_counts is your original matrix
+  # log10_filtered_matrix <- log10(filtered_counts_matrix)
+
+
   
   # Subset the matrix to include all columns and the first 30 rows
   subset_counts <- filtered_counts_matrix[1:30, ]
   
-  # Make heatmap with the subset
-  heatmap(as.matrix(subset_counts), color = colorRampPalette(c("white", "blue"))(100), show_colnames = FALSE)
   
-
+  #make heatmap 
+  
+  pheatmap(filtered_counts_matrix, scale = "row",
+           color=colorRampPalette(c("white", "red"))(50))
+  
+  # #melt the data and add a factor column with HD and Control labels so we can make heatmap
+  # 
+  # melted_mat <- melt(subset_counts)
+  # colnames(melted_mat) <- c("genes", "samples", "counts")
+  # mutate(melted_mat, condition = ifelse(grepl("^H_", samples), "HD", "Control"))
+  # 
+  # 
+  # 
+  # # Make heatmap with the subset
+  # # heatmap(filtered_counts_matrix, color = colorRampPalette(c("white", "blue"))(100), show_colnames = FALSE)
+  # 
+  # ggplot(melted_mat, aes(x = samples, y = genes, fill = log10(counts)))+
+  #   geom_tile()+
+  #   scale_x_discrete()
+  #   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  #     
+  #   
 
 }
 
@@ -553,9 +585,332 @@ output$count_heat <- renderPlot({
 
     })
   
+  
+  
+  ##DIFFERENTIAL EXPRESSION ANALYSIS RESULTS FUNCTIONS
+
+  
+  #' load_deseq_output
+  #'@details loads the output statistics from a DESEQ2 differential expression analysis.
+  
+  load_deseq_output <- reactive({
+    
+    req(input$deseq_upload)
+    deseq_df <- read.csv(input$deseq_upload$datapath, stringsAsFactors = FALSE, row.names = 1)
+    
+    return(deseq_df)
+    
+  })
+  
+
+  #' deseq_results_table
+  #'@details takes DESEQ2 differential expression analysis results, adds an additional column
+  #'indicating upregulation/downregulation/NS, and outputs a stortable table with gene search functionality
+  
+  
+  deseq_results_table <- function(deseq_mat, padj_threshold){
+    
+    #load results
+  
+
+    #adding additional up/down/ns column    
+    annotated_deseq_res <- deseq_mat %>%
+      mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP',
+                                          padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
+                                          TRUE ~ 'NS')) 
+
+    
+    datatable(annotated_deseq_res, rownames = TRUE, options = list(pageLength = nrow(annotated_deseq_res)))
+  }
+  
+  #sample data table
+  output$deseq_tab <- renderDT({
+    deseq_results_table(deseq_mat = load_deseq_output(),
+      padj_threshold = isolate(input$padj_range))
+    
+  })
+  
+  
+  
+
+    #' Function to plot the unadjusted p-values as a histogram
+    #'
+    #' @param labeled_results (tibble): Tibble with DESeq2 results
+    #'
+    #' @return ggplot: a histogram of the raw p-values from the DESeq2 results
+    #' @export
+    #'
+    #' @examples pval_plot <- plot_pvals(labeled_results)
+    deseq_pval_histogram <- function(deseq_results) {
+
+      pval_gg <- ggplot(deseq_results, aes(x = pvalue)) +
+        geom_histogram(bins = 60, color='black', fill='lightblue2')+
+        theme_bw()+
+        labs(x = 'P-Value', y = 'Count', title = 'Histogram of Raw P-Values Obtained from DE Analysis (HD vs. Control)')
+      pval_gg
 
 
+    }
+  
+    output$pval_hist<- renderPlot({
+      
+      deseq_pval_histogram(deseq_results = load_deseq_output())
+      
+    })
+    
+    
+
+      #' Function to plot the log2foldchange from DESeq2 results in a histogram
+      #'
+      #' @param labeled_results (tibble): Tibble with DESeq2 results 
+      #' @param padj_threshold (float): threshold for considering significance (padj)
+      #'
+      #' @return ggplot: a histogram of log2FC values from genes significant at padj
+      #' threshold of 0.1
+      #' @export
+      #'
+      #' @examples log2fc_plot <- plot_log2fc(deseq2_results, .10)
+      plot_log2fc <- function(deseq2_results, padj_threshold) {
+
+        #filter input to only include results within defined padj_threshold
+
+        filtered_results <- subset(deseq2_results, padj <= padj_threshold)
+
+        #plotting filtered results
+        gg2 <- ggplot(filtered_results, aes(x = log2FoldChange)) +
+          geom_histogram(bins = 100, color='black', fill='lightblue2')+
+          theme_bw()+
+          labs(x = 'log2FoldChange', y = 'Counts', title = 'Histogram of Log2FoldChanges for DE Genes (HD vs. Control)')
+        gg2
+
+      }
+      
+      output$logfc_hist<- renderPlot({
+        
+        input$deseq_do #links action button to pvalue slider
+        
+        plot_log2fc(deseq2_results = load_deseq_output(), 
+                             padj_threshold = isolate(input$padj_range))
+        
+      })
+      
+      
+      
+      #' Function to generate volcano plot from DESeq2 results. Before plotting, the function
+      #'
+      #' @param labeled_results (tibble): Tibble with DESeq2 results
+      #'
+      #' @return ggplot: a scatterplot (volcano plot) that displays log2foldchange vs
+      #'   -log10(padj) and labeled by status
+      #' @export
+      #'
+      #' @examples volcano_plot <- plot_volcano(labeled_results)
+      #'
+      plot_volcano <- function(deseq2_results, padj_threshold) {
+
+        volc_data <- deseq2_results %>%
+          
+          #adding expression status annotations based on padj threshold
+          
+          mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP',
+                                              padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
+                                              TRUE ~ 'NS')) %>%
+          
+
+          #add -log10(padj) column to input tibble
+          mutate(`-log10(adjusted p)`=-log10(padj),)
+        
+        print(volc_data)
+
+          gg4 <- ggplot(volc_data, aes(x=log2FoldChange,y=`-log10(adjusted p)`, color = volc_plot_status)) +
+            geom_point()+
+            theme_bw()+
+            geom_hline(yintercept = 0, linetype = "dashed") +
+            labs(x = 'log2FoldChange', y = '-log10(padj)', title = 'Volcano plot of DESeq2 differential expression results (HD vs. Control)')
+
+          gg4
+
+
+      }
+
+      output$volc_plot<- renderPlot({
+        
+        plot_volcano(deseq2_results = load_deseq_output(),
+                     padj_threshold = isolate(input$padj_range))
+        
+      })
+
+      
+  
 }
+
+#' 
+#'   #' Function that takes the DESeq2 results dataframe, converts it to a tibble and
+#'   #' adds a column to denote plotting status in volcano plot. Column should denote
+#'   #' whether gene is either 1. Significant at padj < .10 and has a positive log
+#'   #' fold change, 2. Significant at padj < .10 and has a negative log fold change,
+#'   #' 3. Not significant at padj < .10. Have the values for these labels be UP,
+#'   #' DOWN, NS, respectively. The column should be named `volc_plot_status`.
+#'   #'
+#'   #' @param deseq2_res (df): results from DESeq2 
+#'   #' @param padj_threshold (float): threshold for considering significance (padj)
+#'   #'
+#'   #' @return Tibble with all columns from DESeq2 results and one additional column
+#'   #'   labeling genes by significant and up-regulated, significant and
+#'   #'   downregulated, and not significant at padj < .10.
+#'   #'   
+#'   #' @export
+#'   #'
+#'   #' @examples labeled_results <- label_res(res, .10)
+#'   label_res <- function(deseq2_res, padj_threshold) {
+#'     
+#'     #add deseq2 rownames to new column called genes so they get preserved in tibble conversion
+#'     deseq2_res$genes <- rownames(deseq2_res)
+#'     
+#'     #create dds results tibble
+#'     res <- as_tibble(deseq2_res)
+#'     
+#'     
+#'     #delete pthresh when done
+#'     
+#'     p0_vs_Ad_volc_plot <- res %>%
+#'       mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP', 
+#'                                           padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
+#'                                           TRUE ~ 'NS')) %>%
+#'       relocate(genes) %>%
+#'       return(p0_vs_Ad_volc_plot)
+#'     
+#'   }
+#' 
+#'   #' Function to plot the unadjusted p-values as a histogram
+#'   #'
+#'   #' @param labeled_results (tibble): Tibble with DESeq2 results and one additional
+#'   #' column denoting status in volcano plot
+#'   #'
+#'   #' @return ggplot: a histogram of the raw p-values from the DESeq2 results
+#'   #' @export
+#'   #'
+#'   #' @examples pval_plot <- plot_pvals(labeled_results)
+#'   plot_pvals <- function(labeled_results) {
+#'     
+#'     gg <- ggplot(labeled_results, aes(x = pvalue)) +
+#'       geom_histogram(bins = 60, color='black', fill='lightblue2')+
+#'       theme_bw()+
+#'       labs(x = 'pvalue', y = 'count', title = 'Histogram of raw pvalues obtained from DE analysis (vP0 vs. vAd)')
+#'     gg
+#'     
+#'     
+#'   }
+#'   
+#'   
+#'   
+#'   
+#'   #' Function to plot the log2foldchange from DESeq2 results in a histogram
+#'   #'
+#'   #' @param labeled_results (tibble): Tibble with DESeq2 results and one additional
+#'   #' column denoting status in volcano plot
+#'   #' @param padj_threshold (float): threshold for considering significance (padj)
+#'   #'
+#'   #' @return ggplot: a histogram of log2FC values from genes significant at padj 
+#'   #' threshold of 0.1
+#'   #' @export
+#'   #'
+#'   #' @examples log2fc_plot <- plot_log2fc(labeled_results, .10)
+#'   plot_log2fc <- function(labeled_results, padj_threshold) {
+#'     
+#'     #filter input to only include results within defined padj_threshold
+#'     
+#'     filt_results <- labeled_results %>%
+#'       filter(padj < padj_threshold) 
+#'     
+#'     #plotting filtered results
+#'     gg2 <- ggplot(filt_results, aes(x = log2FoldChange)) +
+#'       geom_histogram(bins = 100, color='black', fill='lightblue2')+
+#'       theme_bw()+
+#'       labs(x = 'log2FoldChange', y = 'count', title = 'Histogram of Log2FoldChanges for DE Genes (vP0 vs. vAd)')
+#'     gg2
+#'     
+#'   }
+#'   
+#'   
+#'   
+#'   
+#'   #' Function to make scatter plot of normalized counts for top ten genes ranked
+#' #' by ascending padj
+#' #'
+#' #' @param labeled_results (tibble): Tibble with DESeq2 results and one
+#' #'   additional column denoting status in volcano plot
+#' #' @param dds_obj (obj): The object returned by running DESeq (dds) containing
+#' #' the updated DESeqDataSet object with test results
+#' #' @param num_genes (int): Number of genes to plot
+#' #'
+#' #' @return ggplot: a scatter plot with the normalized counts for each sample for
+#' #' each of the top ten genes ranked by ascending padj
+#' #' @export
+#' #'
+#' #' @examples norm_counts_plot <- scatter_norm_counts(labeled_results, dds, 10)
+#' scatter_norm_counts <- function(labeled_results, dds_obj, num_genes){
+#' 
+#'   #rank labeled_results based on padj (ascending order)
+#'   
+#'   res_sort <- labeled_results %>% 
+#'     arrange(padj)
+#'   
+#'   #select top genes, using num_genes param
+#'   topgenes <- head(res_sort, num_genes)
+#'   
+#'   #get the normalized counts for top genes
+#'   
+#'   genes <- topgenes$genes
+#'   
+#'   top_norm_counts <- counts(dds_obj)[genes,]
+#'   
+#'   #make dataframe to be used for plot with melt fcn (reshape2 library)
+#'   
+#'   melted_df <- melt(top_norm_counts, varnames = c('Gene', 'Sample'))
+#'   
+#'   #plot the data
+#'   
+#'   gg3 <- ggplot(melted_df, aes(x=Gene, y=log10(value), color = Sample))+
+#'     geom_jitter(width = 0.2)+
+#'     theme_bw()+
+#'     labs(x= 'Genes', y = 'log10(norm_counts)', title = 'Plot of Log10(normalized counts) for top ten DE genes')+
+#'     theme(axis.text.x = element_text(angle =90))
+#'   gg3
+#'   
+#'   
+#' }
+#' 
+#' #' Function to generate volcano plot from DESeq2 results
+#' #'
+#' #' @param labeled_results (tibble): Tibble with DESeq2 results and one
+#' #'   additional column denoting status in volcano plot
+#' #'
+#' #' @return ggplot: a scatterplot (volcano plot) that displays log2foldchange vs
+#' #'   -log10(padj) and labeled by status
+#' #' @export
+#' #'
+#' #' @examples volcano_plot <- plot_volcano(labeled_results)
+#' #' 
+#' plot_volcano <- function(labeled_results) {
+#' 
+#'   volc_data <- labeled_results %>%
+#'     
+#'     #add -log10(padj) column to input tibble
+#'     mutate(`-log10(adjusted p)`=-log10(padj),)
+#'     
+#'     gg4 <- ggplot(volc_data, aes(x=log2FoldChange,y=`-log10(adjusted p)`,color=`volc_plot_status`)) +
+#'       geom_point()+
+#'       theme_bw()+
+#'       geom_hline(yintercept = 0, linetype = "dashed") +
+#'       labs(x = 'log2FoldChange', y = '-log10(padj)', title = 'Volcano plot of DESeq2 differential expression results (vP0 vs. vAd)')
+#'     
+#'     gg4
+#' 
+#'   
+#' }
+
+  
 
 # Run the application 
 shinyApp(ui = ui, server = server)
