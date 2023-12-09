@@ -18,6 +18,10 @@ library(ggplot2)
 library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
+library(fgsea)
+library(biomaRt)
+
+#heatmap libraries (delete the ones you don't use)
 library(pheatmap) #used for creating clustered counts heatmap
 library(reshape) #used for "melting" counts data to make heatmap
 library(ggplotify) ## to convert pheatmap to ggplot2
@@ -161,7 +165,7 @@ ui <- fluidPage(
                            #Slider select the adjusted p-value filter
                            tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
                            sliderInput("padj_range", "Select the Adjusted P-Value Filtering Threshold:",
-                                       min = 0, max = 1,
+                                       min = 0, max = 1, step = 0.01,
                                        value = 0.1),
                            actionButton("deseq_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
                          ),  
@@ -179,7 +183,10 @@ ui <- fluidPage(
                                     
                                     tabPanel("Top 10 Normalized Counts",),
                                     
-                                    tabPanel("Volcano Plot of DE Results", plotOutput("volc_plot")))
+                                    tabPanel("Volcano Plot of DE Results", plotOutput("volc_plot"))
+                                             
+                              
+                                             )
                                     
                                     
                                     
@@ -196,24 +203,77 @@ ui <- fluidPage(
                        sidebarLayout(
                          sidebarPanel(
                            
+                           h5(HTML('Please load the differential expression results in the DE tab before uploading the files below.')),
+                           
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           fileInput("upload", paste0("Load FGSEA results"), accept = c(".csv", ".tsv")),
+                           fileInput("id2gene_upload", paste0("Load EnsembID-to-MGI Symbol Mappings"), accept = c(".txt")),
+                           
+                           tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
+                       }.progress-bar{color:black; background-color:#66cc99;}")),
+                           textInput("gene_set_path", paste0("Input the File Path of the Gene Sets of Interest, wrapped in quotation marks (.gmt format)"))
                            
                          ), 
                          
                          
                          mainPanel(tabsetPanel(
+
+                           tabPanel("FGSEA Results Barplot", fluidRow(sidebarPanel(
+                             
+                
+                             #Slider to select number of top pathways to plot based on adjusted p-value
+                             tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                             sliderInput("fgsea_barplot_range", "Select the number of top pathways to plot based on adjusted p-value:",
+                                         min = 0, max = 1,
+                                         value = 0.1),
+                             actionButton("fgsea_barplot_do", "Plot", width = "100%", icon = icon("brush"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
                            
-                           tabPanel("FGSEA Results Barplot"
+                
+                           ))
                                     
                            ),
                            
-                           tabPanel("Table",
+                           tabPanel("Table", fluidRow(sidebarPanel(
+                             
+                             
+                             #Slider to filter table by adjusted pvalue
+                             tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                             sliderInput("fgsea_table_range", "Select adjusted p-value to filter FGSEA results:",
+                                         min = 0, max = 1,
+                                         value = 0.1),
+                             actionButton("fgsea_table_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99"),
+                             
+                             #radio buttons to select all, positive, or negative NES pathways
+                             radioButtons("select_nes_pathways", "Choose which NES Pathways to display",
+                                          c("All", "Positive", "Negative"), selected = "All"),
+                                          
+                                          
+                            #download nutton to export current filtered and displayed table results
+                            
+                            downloadLink('download_fgsea_table', 'Download filtered table as a .csv file')
+                             
+                             
+                           ), tableOutput("fgsea_table"))
+                                 
                                     
+                        
                            ),
                            
-                           tabPanel("NES Scatter Plot",
+                           tabPanel("NES Scatter Plot", fluidRow(sidebarPanel(
+                             
+                             
+                             #Slider to filter table by adjusted pvalue
+                             tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                             sliderInput("fgsea_table_range", "Select adjusted p-value to filter FGSEA results:",
+                                         min = 0, max = 1,
+                                         value = 0.1),
+                             actionButton("fgsea_scatter_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99"),
+                            
+                             
+                             
+                           ), plotOutput("fgsea_scatter"))
+                           
+                           
                                     
                            ),
                            
@@ -613,9 +673,12 @@ output$count_heat <- renderPlot({
     #load results
   
 
-    #adding additional up/down/ns column    
+    #applying padj filter,adding additional up/down/ns column   
     annotated_deseq_res <- deseq_mat %>%
-      mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP',
+      
+      filter(padj <= padj_threshold) %>% 
+      
+      mutate(Expression_Status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP',
                                           padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
                                           TRUE ~ 'NS')) 
 
@@ -625,6 +688,10 @@ output$count_heat <- renderPlot({
   
   #sample data table
   output$deseq_tab <- renderDT({
+    
+    
+    input$deseq_do #link action button to adjusted pvalue slider
+    
     deseq_results_table(deseq_mat = load_deseq_output(),
       padj_threshold = isolate(input$padj_range))
     
@@ -719,8 +786,7 @@ output$count_heat <- renderPlot({
 
           #add -log10(padj) column to input tibble
           mutate(`-log10(adjusted p)`=-log10(padj),)
-        
-        print(volc_data)
+
 
           gg4 <- ggplot(volc_data, aes(x=log2FoldChange,y=`-log10(adjusted p)`, color = volc_plot_status)) +
             geom_point()+
@@ -735,182 +801,250 @@ output$count_heat <- renderPlot({
 
       output$volc_plot<- renderPlot({
         
+        input$deseq_do #links action button to pvalue slider
+        
         plot_volcano(deseq2_results = load_deseq_output(),
-                     padj_threshold = isolate(input$padj_range))
+                     padj_threshold = isolate(input$padj_range)
+                     )
         
       })
 
       
+      
+      
+    
+      ##FGSEA GENE ENRICHMENT FUNCTIONS
+      
+      #' load_id2gene_file
+      #'@details loads a text file with mappings between Ensembl IDs and MGI symbols
+      
+      load_id2gene_file <- reactive({
+        
+        req(input$id2gene_upload)
+        
+        
+        id2gene <- read_delim(input$id2gene_upload$datapath, delim='\t', col_names = columns, show_col_types = FALSE)
+        
+        
+        
+        return(id2gene)
+
+      })
+      
+      
+      #' #' load_gene_set_file
+      #' #'@details loads a .gmt file with gene sets of interest for fgsea 
+      #' 
+      #' load_gene_set_file_path <- reactive({
+      #'   
+      #'   req(input$gene_set_path)
+      #'   
+      #'   if (!is.null(input$gene_set_path)) {
+      #'     return(input$gene_set_path$datapath)
+      #'   } else {
+      #'     print("Please provide a valid file path")
+      #'     return(NULL)  # Return NULL if the file path is not provided
+      #'   }
+      #' 
+      #' })
+      #' 
+      #' output$gene_set_path <- reactive({
+      #'   
+      #'   load_gene_set_file_path()
+      #' })
+      
+      
+
+      #' Function to generate fgsea results, using a vector ranked by log2FC descending
+      #'
+      #' @param labeled_results (tibble): Tibble with DESeq2 results 
+      #' @param id2gene_file: Path to the file containing the mapping of
+      #' ensembl IDs to MGI symbols
+      #' @param gmt_file_path (str): Path to the gene sets of interest in GMT format
+      #'#' @param min_size (int): Minimum number of genes in gene sets to be allowed
+      #' @param max_size (int): Maximum number of genes in gene sets to be allowed
+      #'
+      #' @return Named vector with gene symbols as names, and log2FoldChange as values
+      #' ranked in descending order
+      #' @export
+      #'
+      #' @examples rnk_list <- make_ranked_log2fc(labeled_results, 'data/id2gene.txt')
+
+      conduct_fgsea <- function(deseq2_results, id2gene_file, gmt_file_path, min_size, max_size) {
+        
+        
+        #change column names in id2gene file
+        colnames(id2gene_file) <- c('ensemblids', 'gene_symbols')
+        
+        print(id2gene_file)
+
+        #filter out NA rows in labeled results, merging labeled results with id2gene tibble
+        lab_rank_res <- deseq2_results %>%
+          drop_na() %>%
+          rownames_to_column(., "genes") %>% #convert gene rownames to a new column for merging purposes
+
+          left_join(.,id2gene_file, by = c('genes' = 'ensemblids')) %>%
+
+          mutate(log2fc_ranks = rank(log2FoldChange, ties.method='random')) %>%
+          arrange(desc(log2fc_ranks))
+
+
+        lab_rank_res <- lab_rank_res[, c('log2FoldChange', 'symbol')] # Select only the desired columns
+
+
+
+        # #reading in the gene set
+
+
+
+        hallmark_pathways_fgsea <- fgsea::gmtPathways(gmt_file_path)
+
+        #running fgsea
+
+        fgsea_results <- fgsea(hallmark_pathways_fgsea, lab_rank_res, minSize = min_size, maxSize= max_size)
+        fgsea_results <- fgsea_results %>% as_tibble()
+
+        return(fgsea_results)
+
+      }
+      
+      
+      output$fgsea_table <- renderDT({
+        conduct_fgsea(deseq2_results = load_deseq_output(),
+                            id2gene_file = load_id2gene_file(),
+                            gmt_file_path = 'data/m2.cp.v2023.1.Mm.symbols.gmt', 
+                           min_size = 10, max_size = 1000)
+        
+      })
+      
+      
+      
+
+
+      
+      
+        
   
 }
 
 #' 
-#'   #' Function that takes the DESeq2 results dataframe, converts it to a tibble and
-#'   #' adds a column to denote plotting status in volcano plot. Column should denote
-#'   #' whether gene is either 1. Significant at padj < .10 and has a positive log
-#'   #' fold change, 2. Significant at padj < .10 and has a negative log fold change,
-#'   #' 3. Not significant at padj < .10. Have the values for these labels be UP,
-#'   #' DOWN, NS, respectively. The column should be named `volc_plot_status`.
-#'   #'
-#'   #' @param deseq2_res (df): results from DESeq2 
-#'   #' @param padj_threshold (float): threshold for considering significance (padj)
-#'   #'
-#'   #' @return Tibble with all columns from DESeq2 results and one additional column
-#'   #'   labeling genes by significant and up-regulated, significant and
-#'   #'   downregulated, and not significant at padj < .10.
-#'   #'   
-#'   #' @export
-#'   #'
-#'   #' @examples labeled_results <- label_res(res, .10)
-#'   label_res <- function(deseq2_res, padj_threshold) {
-#'     
-#'     #add deseq2 rownames to new column called genes so they get preserved in tibble conversion
-#'     deseq2_res$genes <- rownames(deseq2_res)
-#'     
-#'     #create dds results tibble
-#'     res <- as_tibble(deseq2_res)
-#'     
-#'     
-#'     #delete pthresh when done
-#'     
-#'     p0_vs_Ad_volc_plot <- res %>%
-#'       mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP', 
-#'                                           padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
-#'                                           TRUE ~ 'NS')) %>%
-#'       relocate(genes) %>%
-#'       return(p0_vs_Ad_volc_plot)
-#'     
-#'   }
-#' 
-#'   #' Function to plot the unadjusted p-values as a histogram
-#'   #'
-#'   #' @param labeled_results (tibble): Tibble with DESeq2 results and one additional
-#'   #' column denoting status in volcano plot
-#'   #'
-#'   #' @return ggplot: a histogram of the raw p-values from the DESeq2 results
-#'   #' @export
-#'   #'
-#'   #' @examples pval_plot <- plot_pvals(labeled_results)
-#'   plot_pvals <- function(labeled_results) {
-#'     
-#'     gg <- ggplot(labeled_results, aes(x = pvalue)) +
-#'       geom_histogram(bins = 60, color='black', fill='lightblue2')+
-#'       theme_bw()+
-#'       labs(x = 'pvalue', y = 'count', title = 'Histogram of raw pvalues obtained from DE analysis (vP0 vs. vAd)')
-#'     gg
-#'     
-#'     
-#'   }
-#'   
-#'   
-#'   
-#'   
-#'   #' Function to plot the log2foldchange from DESeq2 results in a histogram
-#'   #'
-#'   #' @param labeled_results (tibble): Tibble with DESeq2 results and one additional
-#'   #' column denoting status in volcano plot
-#'   #' @param padj_threshold (float): threshold for considering significance (padj)
-#'   #'
-#'   #' @return ggplot: a histogram of log2FC values from genes significant at padj 
-#'   #' threshold of 0.1
-#'   #' @export
-#'   #'
-#'   #' @examples log2fc_plot <- plot_log2fc(labeled_results, .10)
-#'   plot_log2fc <- function(labeled_results, padj_threshold) {
-#'     
-#'     #filter input to only include results within defined padj_threshold
-#'     
-#'     filt_results <- labeled_results %>%
-#'       filter(padj < padj_threshold) 
-#'     
-#'     #plotting filtered results
-#'     gg2 <- ggplot(filt_results, aes(x = log2FoldChange)) +
-#'       geom_histogram(bins = 100, color='black', fill='lightblue2')+
-#'       theme_bw()+
-#'       labs(x = 'log2FoldChange', y = 'count', title = 'Histogram of Log2FoldChanges for DE Genes (vP0 vs. vAd)')
-#'     gg2
-#'     
-#'   }
-#'   
-#'   
-#'   
-#'   
-#'   #' Function to make scatter plot of normalized counts for top ten genes ranked
-#' #' by ascending padj
+#' #' Function to generate a named vector ranked by log2FC descending
 #' #'
 #' #' @param labeled_results (tibble): Tibble with DESeq2 results and one
 #' #'   additional column denoting status in volcano plot
-#' #' @param dds_obj (obj): The object returned by running DESeq (dds) containing
-#' #' the updated DESeqDataSet object with test results
-#' #' @param num_genes (int): Number of genes to plot
+#' #' @param id2gene_path (str): Path to the file containing the mapping of
+#' #' ensembl IDs to MGI symbols
 #' #'
-#' #' @return ggplot: a scatter plot with the normalized counts for each sample for
-#' #' each of the top ten genes ranked by ascending padj
+#' #' @return Named vector with gene symbols as names, and log2FoldChange as values
+#' #' ranked in descending order
 #' #' @export
 #' #'
-#' #' @examples norm_counts_plot <- scatter_norm_counts(labeled_results, dds, 10)
-#' scatter_norm_counts <- function(labeled_results, dds_obj, num_genes){
+#' #' @examples rnk_list <- make_ranked_log2fc(labeled_results, 'data/id2gene.txt')
 #' 
-#'   #rank labeled_results based on padj (ascending order)
+#' make_ranked_log2fc <- function(labeled_results, id2gene_path) {
 #'   
-#'   res_sort <- labeled_results %>% 
-#'     arrange(padj)
 #'   
-#'   #select top genes, using num_genes param
-#'   topgenes <- head(res_sort, num_genes)
+#'   #read in id2gene file 
+#'   columns <- c('ensemblids', 'gene_symbols') #adding column names to input
 #'   
-#'   #get the normalized counts for top genes
+#'   id2gene <- read_delim(id2gene_path, delim='\t', col_names = columns, show_col_types = FALSE)
 #'   
-#'   genes <- topgenes$genes
 #'   
-#'   top_norm_counts <- counts(dds_obj)[genes,]
 #'   
-#'   #make dataframe to be used for plot with melt fcn (reshape2 library)
+#'   #filter out NA rows in labeled results, merging labeled results with id2gene tibble 
+#'   lab_rank_res <- labeled_results %>%
+#'     drop_na() %>%
+#'     left_join(.,id2gene, by = c('genes' = 'ensemblids')) %>%
+#'     mutate(log2fc_ranks = rank(log2FoldChange, ties.method='random')) %>%
+#'     arrange(desc(log2fc_ranks))
 #'   
-#'   melted_df <- melt(top_norm_counts, varnames = c('Gene', 'Sample'))
+#'   #create log2fc vector, then order it in descending order
 #'   
-#'   #plot the data
+#'   log2fc_vec <- lab_rank_res$log2FoldChange
 #'   
-#'   gg3 <- ggplot(melted_df, aes(x=Gene, y=log10(value), color = Sample))+
-#'     geom_jitter(width = 0.2)+
-#'     theme_bw()+
-#'     labs(x= 'Genes', y = 'log10(norm_counts)', title = 'Plot of Log10(normalized counts) for top ten DE genes')+
-#'     theme(axis.text.x = element_text(angle =90))
-#'   gg3
+#'   #adding the gene symbols
 #'   
+#'   names(log2fc_vec) <- lab_rank_res$gene_symbols
+#'   
+#'   return (log2fc_vec)  
 #'   
 #' }
 #' 
-#' #' Function to generate volcano plot from DESeq2 results
+#' #' Function to run fgsea with arguments for min and max gene set size
 #' #'
-#' #' @param labeled_results (tibble): Tibble with DESeq2 results and one
-#' #'   additional column denoting status in volcano plot
+#' #' @param gmt_file_path (str): Path to the gene sets of interest in GMT format
+#' #' @param rnk_list (named vector): Named vector generated previously with gene 
+#' #' symbols and log2Fold Change values in descending order
+#' #' @param min_size (int): Minimum number of genes in gene sets to be allowed
+#' #' @param max_size (int): Maximum number of genes in gene sets to be allowed
 #' #'
-#' #' @return ggplot: a scatterplot (volcano plot) that displays log2foldchange vs
-#' #'   -log10(padj) and labeled by status
+#' #' @return Tibble of results from running fgsea
 #' #' @export
 #' #'
-#' #' @examples volcano_plot <- plot_volcano(labeled_results)
-#' #' 
-#' plot_volcano <- function(labeled_results) {
+#' #' @examples fgsea_results <- run_fgsea('data/m2.cp.v2023.1.Mm.symbols.gmt', rnk_list, 15, 500)
+#' run_fgsea <- function(gmt_file_path, rnk_list, min_size, max_size) {
+#'   
+#'   #reading in the gene set
+#'   
+#'   hallmark_pathways_fgsea <- fgsea::gmtPathways(gmt_file_path)
+#'   
+#'   #running fgsea
+#'   
+#'   fgsea_results <- fgsea(hallmark_pathways_fgsea, rnk_list, minSize = min_size, maxSize= max_size)
+#'   fgsea_results <- fgsea_results %>% as_tibble()
+#'   
+#'   return(fgsea_results)
+#' }
 #' 
-#'   volc_data <- labeled_results %>%
+#' #' Function to plot top ten positive NES and top ten negative NES pathways
+#' #' in a barchart
+#' #'
+#' #' @param fgsea_results (tibble): the fgsea results in tibble format returned by
+#' #'   the previous function
+#' #' @param num_paths (int): the number of pathways for each direction (top or
+#' #'   down) to include in the plot. Set this at 10.
+#' #'
+#' #' @return ggplot with a barchart showing the top twenty pathways ranked by positive
+#' #' and negative NES
+#' #' @export
+#' #'
+#' #' @examples fgsea_plot <- top_pathways(fgsea_results, 10)
+#' top_pathways <- function(fgsea_results, num_paths){
+#'   
+#'   fgsea_results %>%
+#'     mutate(pathway = forcats::fct_reorder(pathway, NES)) 
+#'   
+#'   #getting min and max values for NES in the results tibble, merging them
+#'   
+#'   lowest_NES <- slice_min(fgsea_results, NES, n = num_paths)
+#'   
+#'   highest_NES <- slice_max(fgsea_results, NES, n= num_paths)
+#'   
+#'   merged_top_res <- bind_rows(lowest_NES, highest_NES) %>%
+#'     arrange(NES) %>%
+#'     mutate(pathway = reorder(pathway, NES))
+#'   
+#'   #make_plot 
+#'   ggplot(merged_top_res) +
+#'     geom_bar(aes(x=pathway, y=NES, fill = as.character(sign(NES))), stat='identity', show.legend = FALSE) +
+#'     scale_fill_manual(values = c('1' = 'red', '-1' = 'blue')) + 
 #'     
-#'     #add -log10(padj) column to input tibble
-#'     mutate(`-log10(adjusted p)`=-log10(padj),)
-#'     
-#'     gg4 <- ggplot(volc_data, aes(x=log2FoldChange,y=`-log10(adjusted p)`,color=`volc_plot_status`)) +
-#'       geom_point()+
-#'       theme_bw()+
-#'       geom_hline(yintercept = 0, linetype = "dashed") +
-#'       labs(x = 'log2FoldChange', y = '-log10(padj)', title = 'Volcano plot of DESeq2 differential expression results (vP0 vs. vAd)')
-#'     
-#'     gg4
-#' 
+#'     theme_minimal() +
+#'     ggtitle('fgsea results for Hallmark MSigDB gene sets') +
+#'     ylab('Normalized Enrichment Score (NES)') +
+#'     xlab('')+
+#'     theme(axis.text.x = element_text(size=6))+
+#'     theme(axis.text.y = element_text(size = 4))+ 
+#'     coord_flip()
+#'   
 #'   
 #' }
 
-  
+
+
+
+
+
 
 # Run the application 
 shinyApp(ui = ui, server = server)
