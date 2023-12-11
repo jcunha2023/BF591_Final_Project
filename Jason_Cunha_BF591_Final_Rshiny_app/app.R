@@ -25,6 +25,7 @@ library('biomaRt')
 library(pheatmap) #used for creating clustered counts heatmap
 library(reshape) #used for "melting" counts data to make heatmap
 library(ggplotify) ## to convert pheatmap to ggplot2
+library(gplots) # used for heatmap.2()
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -270,14 +271,14 @@ ui <- fluidPage(
                              
                              #Slider to filter table by adjusted pvalue
                              tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
-                             sliderInput("fgsea_table_range", "Select adjusted p-value to filter FGSEA results:",
-                                         min = 0, max = 1,
-                                         value = 0.1),
+                             sliderInput("fgsea_scatter_range", "Select -log10(adjusted p-value) to filter FGSEA results:",
+                                         min = 0, max = 70,
+                                         value = 35),
                              actionButton("fgsea_scatter_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99"),
                             
                              
                              
-                           ), plotOutput("fgsea_scatter"))
+                           ), column(8, plotOutput("fgsea_scatter")))
                            
                            
                                     
@@ -391,6 +392,7 @@ server <- function(input, output) {
     
     ggplot(gather(continuous_data_df), aes(value, fill = key))+
       geom_histogram(bins = 10)+
+      theme_bw()+
       facet_wrap(~key, scales = "free_x")
     
     
@@ -476,9 +478,9 @@ server <- function(input, output) {
     
     result_tib <- count_info_data %>%
       
-      tibble("gene_count_medians" = apply(select(.,-1), 1, median),
-             "gene_variance" = apply(select(.,-1), 1, var),
-             "sum_zero_counts" = apply(select(.,-1) == 0, 1, sum),
+      tibble("gene_count_medians" = apply(dplyr::select(.,-1), 1, median),
+             "gene_variance" = apply(dplyr::select(.,-1), 1, var),
+             "sum_zero_counts" = apply(dplyr::select(.,-1) == 0, 1, sum),
              "ranked_medians" = rank(gene_count_medians)
              
              
@@ -535,6 +537,13 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
 
   filtered_counts_matrix <- as.matrix(filtered_counts)
   
+  # Reorder columns based on control and disease samples
+  control_columns <- grep("^C_", colnames(filtered_counts_matrix))
+  disease_columns <- grep("^H_", colnames(filtered_counts_matrix))
+  all_columns <- c(control_columns, disease_columns)
+  filtered_counts_matrix <- filtered_counts_matrix[, all_columns]
+  
+  
   # log10_filtered_matrix <- log10(filtered_counts_matrix)
 
 
@@ -542,11 +551,25 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   # Subset the matrix to include all columns and the first 30 rows
   subset_counts <- filtered_counts_matrix[1:30, ]
   
+
   
   #make heatmap 
+
+  heatmap.2(subset_counts, 
+            dendrogram = "column",
+            key = TRUE,
+            density.info = "none",
+            trace = "none", 
+            Colv = as.dendrogram(hclust(dist(subset_counts))),
+            sepwidth = c(0.2, 0.2),         # Set width for column separations
+            margins = c(10, 5),             # Adjust top and bottom margins
+            main = "Heatmap of Counts",     # Add a main title
+            cex.main = 2 ,                   # Set main title font size
+            key.xlab = "Samples",  
+            key.ylab = "Genes")
   
-  pheatmap(filtered_counts_matrix, scale = "row",
-           color=colorRampPalette(c("white", "red"))(50))
+  # pheatmap(filtered_counts_matrix, scale = "row",
+  #          color=colorRampPalette(c("white", "red"))(50))
   
   # #melt the data and add a factor column with HD and Control labels so we can make heatmap
   # 
@@ -1047,8 +1070,6 @@ output$count_heat <- renderPlot({
           arrange(NES) %>%
           mutate(pathway = reorder(pathway, NES))
         
-        
-        print(merged_top_res)
 
         #make_plot
         ggplot(merged_top_res) +
@@ -1074,6 +1095,53 @@ output$count_heat <- renderPlot({
                     num_paths = isolate(input$fgsea_barplot_range))
         
       })
+      
+      
+      #' fgsea_scatter_plot
+      #'@details Generates a scatterplot of -log10(p-adjusted) vs. NES of 
+      #'fgsea results, with values below padjusted threshold in gray 
+      
+      #'
+      #' @param data tibble: a (n x _S_) data set
+      #' @param meta tibble: sample-level meta information (_S_ x 3)
+      #' @param title string: title for plot
+      #'
+      #' @return ggplot: scatter plot showing each sample in the first two PCs.
+      #'
+      #' @examples
+      #' `plot_pca(data, meta, "Raw Count PCA")`
+      
+      fgsea_scatter_plot <- function(fgsea_results, padj_threshold) {
+
+        
+        fgsea_gg <- ggplot(fgsea_results, aes(x= NES, y=-log10(padj))) +
+          geom_point(aes(color = ifelse(-log10(padj) < padj_threshold, "FALSE", "TRUE")))+
+          scale_color_manual(values = c("TRUE" = 'lightblue2', "FALSE" = 'gray'))+
+          theme_bw()+
+          theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+          
+          labs(x = "NES",
+               y = "-log10(padj)",
+               title = "FGSEA NES vs. -log10(padj)",
+               color = paste("-log10(padj) <= ", padj_threshold))
+        
+        return(fgsea_gg)
+      }
+      
+      
+      output$fgsea_scatter <- renderPlot({
+        
+        input$fgsea_scatter_do #connects slider input to action button
+        
+        fgsea_scatter_plot(fgsea_results = fgsea_output(),
+                           padj_threshold = isolate(input$fgsea_scatter_range))
+        
+      })
+      
+      
+      
+      
       
       
       
