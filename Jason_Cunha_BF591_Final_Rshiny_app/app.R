@@ -18,8 +18,8 @@ library(ggplot2)
 library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
-library(fgsea)
-library(biomaRt)
+library('fgsea')
+library('biomaRt')
 
 #heatmap libraries (delete the ones you don't use)
 library(pheatmap) #used for creating clustered counts heatmap
@@ -211,7 +211,7 @@ ui <- fluidPage(
                            
                            tags$head(tags$style(".btn-file {background-color:#e86866;border-color: #e86866; 
                        }.progress-bar{color:black; background-color:#66cc99;}")),
-                           textInput("gene_set_path", paste0("Input the File Path of the Gene Sets of Interest, wrapped in quotation marks (.gmt format)"))
+                           fileInput("gene_set_path", paste0("Input the File Path of the Gene Sets of Interest, wrapped in quotation marks (.gmt format)", accept = c(".gmt")))
                            
                          ), 
                          
@@ -224,12 +224,12 @@ ui <- fluidPage(
                              #Slider to select number of top pathways to plot based on adjusted p-value
                              tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
                              sliderInput("fgsea_barplot_range", "Select the number of top pathways to plot based on adjusted p-value:",
-                                         min = 0, max = 1,
-                                         value = 0.1),
+                                         min = 1, max = 100,
+                                         value = 10),
                              actionButton("fgsea_barplot_do", "Plot", width = "100%", icon = icon("brush"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
                            
                 
-                           ))
+                           ), column(8, plotOutput("fgsea_top_paths")))
                                     
                            ),
                            
@@ -241,19 +241,25 @@ ui <- fluidPage(
                              sliderInput("fgsea_table_range", "Select adjusted p-value to filter FGSEA results:",
                                          min = 0, max = 1,
                                          value = 0.1),
-                             actionButton("fgsea_table_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99"),
+                            
                              
                              #radio buttons to select all, positive, or negative NES pathways
                              radioButtons("select_nes_pathways", "Choose which NES Pathways to display",
                                           c("All", "Positive", "Negative"), selected = "All"),
+                             
+                             #create numeric input for min and max fgsea values
+                             numericInput("minval", "Minimum Gene Set Size to Test:", min = 1, value = 15),
+                             numericInput("maxval" ,"Maximum Gene Set Size to Test:", min = 1, value = 500), 
+                             
+                             #filtering action button
+                             actionButton("fgsea_table_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99"),
                                           
-                                          
-                            #download nutton to export current filtered and displayed table results
+                            #download button to export current filtered and displayed table results
                             
                             downloadLink('download_fgsea_table', 'Download filtered table as a .csv file')
                              
                              
-                           ), tableOutput("fgsea_table"))
+                           ), column(8, DTOutput("fgsea_table")))
                                  
                                     
                         
@@ -832,26 +838,26 @@ output$count_heat <- renderPlot({
       })
       
       
-      #' #' load_gene_set_file
-      #' #'@details loads a .gmt file with gene sets of interest for fgsea 
-      #' 
-      #' load_gene_set_file_path <- reactive({
-      #'   
-      #'   req(input$gene_set_path)
-      #'   
-      #'   if (!is.null(input$gene_set_path)) {
-      #'     return(input$gene_set_path$datapath)
-      #'   } else {
-      #'     print("Please provide a valid file path")
-      #'     return(NULL)  # Return NULL if the file path is not provided
-      #'   }
-      #' 
-      #' })
-      #' 
-      #' output$gene_set_path <- reactive({
-      #'   
-      #'   load_gene_set_file_path()
-      #' })
+      #' load_genes
+      #'@details loads a .gmt file with gene sets of interest for fgsea
+
+      load_gene_sets<- reactive({
+
+        req(input$gene_set_path)
+        
+        
+        pathwayLines <- strsplit(readLines(input$gene_set_path$datapath), "\t")
+        pathways <- lapply(pathwayLines, tail, -2)
+        names(pathways) <- sapply(pathwayLines, head, 1)
+        
+        return(pathways)
+
+      })
+      
+      output$file_path_output <- renderText({
+        
+        load_gene_sets()
+      })
       
       
 
@@ -860,185 +866,224 @@ output$count_heat <- renderPlot({
       #' @param labeled_results (tibble): Tibble with DESeq2 results 
       #' @param id2gene_file: Path to the file containing the mapping of
       #' ensembl IDs to MGI symbols
-      #' @param gmt_file_path (str): Path to the gene sets of interest in GMT format
-      #'#' @param min_size (int): Minimum number of genes in gene sets to be allowed
-      #' @param max_size (int): Maximum number of genes in gene sets to be allowed
-      #'
+
       #' @return Named vector with gene symbols as names, and log2FoldChange as values
       #' ranked in descending order
       #' @export
       #'
       #' @examples rnk_list <- make_ranked_log2fc(labeled_results, 'data/id2gene.txt')
-
-      conduct_fgsea <- function(deseq2_results, id2gene_file, gmt_file_path, min_size, max_size) {
+      
+      
+      run_fgsea <- function(deseq2_results, gmt_gene_sets, id2gene_file, min_size, max_size, padj_threshold, nes_filter) {
         
         
         #change column names in id2gene file
-        colnames(id2gene_file) <- c('ensemblids', 'gene_symbols')
-        
-        print(id2gene_file)
+        colnames(id2gene_file) <- c('gene_symbols', 'ensemblids')
+
 
         #filter out NA rows in labeled results, merging labeled results with id2gene tibble
         lab_rank_res <- deseq2_results %>%
           drop_na() %>%
           rownames_to_column(., "genes") %>% #convert gene rownames to a new column for merging purposes
+          
+          mutate(genes = sub("\\.\\d+$", "", genes)) %>% #strip the version number from ensemblids (needed later on for merging)
 
           left_join(.,id2gene_file, by = c('genes' = 'ensemblids')) %>%
 
           mutate(log2fc_ranks = rank(log2FoldChange, ties.method='random')) %>%
           arrange(desc(log2fc_ranks))
+        
+        
+        #create log2fc named vector, use as input for fgsea function
+        
+        log2fc_vec <- lab_rank_res$log2FoldChange
+        
+        #adding the gene symbols
+        
+        names(log2fc_vec) <- lab_rank_res$symbol
+        
 
-
-        lab_rank_res <- lab_rank_res[, c('log2FoldChange', 'symbol')] # Select only the desired columns
-
-
-
-        # #reading in the gene set
-
-
-
-        hallmark_pathways_fgsea <- fgsea::gmtPathways(gmt_file_path)
-
+        
+        #hallmark_pathways_fgsea <- fgsea::gmtPathways(gmt_file_path)
+        
         #running fgsea
+        
+        fgsea_results <- fgsea(pathways = gmt_gene_sets, stats = log2fc_vec , minSize = min_size, maxSize= max_size)
 
-        fgsea_results <- fgsea(hallmark_pathways_fgsea, lab_rank_res, minSize = min_size, maxSize= max_size)
-        fgsea_results <- fgsea_results %>% as_tibble()
+
+        
+        #filter input to only include results within defined padj_threshold
+        
+        fgsea_results <- subset(fgsea_results, padj <= padj_threshold)          
+          
+          #if/else statements to check if rows have positive or negative NES values
+          
+          if (nes_filter == "Positive") {
+            fgsea_results <- subset(fgsea_results, NES > 0)
+          } else if (nes_filter == "Negative") {
+            fgsea_results <- subset(fgsea_results, NES < 0)
+          }
+          
+          #convert to tibble, 
+          
+         fgsea_results <-  as_tibble(fgsea_results)
+         
 
         return(fgsea_results)
-
+        #datatable(fgsea_results, rownames = TRUE, options = list(pageLength = 50))
       }
+        
       
+      #create reactive expression to use the run_fgsea information
+      
+      fgsea_output <- reactive({
+        
+        input$fgsea_table_do #connect table functionality to action button
+
+            run_fgsea(deseq2_results = load_deseq_output(),
+                          gmt_gene_sets = load_gene_sets(),
+                          id2gene_file = load_id2gene_file(),
+                          min_size = isolate(input$minval),
+                          max_size = isolate(input$maxval),
+                          padj_threshold = isolate(input$fgsea_table_range),
+                          nes_filter = isolate(input$select_nes_pathways))
+          
+
+
+
+      })
+      
+      
+
+    #calling reactive fgsea variable to generate table
       
       output$fgsea_table <- renderDT({
-        conduct_fgsea(deseq2_results = load_deseq_output(),
-                            id2gene_file = load_id2gene_file(),
-                            gmt_file_path = 'data/m2.cp.v2023.1.Mm.symbols.gmt', 
-                           min_size = 10, max_size = 1000)
+
+        input$fgsea_table_do #connect table functionality to action button
         
+        fgsea_output()
+
+
       })
       
       
       
+    # #create a special fgsea output variable for downloading purposes
+    #   
+    #   data <- renderPrint({
+    #     
+    #     df <- apply(fgsea_output(), 2, as.character)
+    #     
+    #     return(df)
+    #     
+    #   })
+    #   
+    #   
+    #   #add download functionality to run_fgsea
+    # 
+    #   output$download_fgsea_table <- downloadHandler(
+    # 
+    #     filename = function(){
+    #       paste("filtered_fgsea_table", Sys.Date(), ".csv", sep = "_")
+    #     },
+    # 
+    #     content = function(file){
+    #       write.csv(apply(fgsea_output(), 2, as.character), row.names = FALSE)
+    # 
+    #     })
+      
+      
+      
+      
 
 
+#       #add download functionality to run_fgsea
+#       
+#       output$download_fgsea_table <- downloadHandler(
+#         
+#         filename = function(){
+#           paste("filtered_fgsea_table", Sys.Date(), ".csv", sep = "_")
+#         },
+#         
+#         content = function(file){
+#           write.csv(run_fgsea(deseq2_results = load_deseq_output(),
+#                                     gmt_gene_sets = load_gene_sets(),
+#                                     id2gene_file = load_id2gene_file(),
+#                                     min_size = isolate(input$minval),
+#                                     max_size = isolate(input$maxval),
+#                                     padj_threshold = isolate(input$fgsea_table_range),
+#                                     nes_filter = isolate(input$select_nes_pathways)), file, row.names = FALSE)
+#           
+#           
+#       
+#         })
+      
+      
+      #' Function to plot top ten positive NES and top ten negative NES pathways
+      #' in a barchart
+      #'
+      #' @param fgsea_results (tibble): the fgsea results in tibble format returned by
+      #'   the previous function
+      #' @param num_paths (int): the number of pathways for each direction (top or
+      #'   down) to include in the plot. Set this at 10.
+      #'
+      #' @return ggplot with a barchart showing the top twenty pathways ranked by positive
+      #' and negative NES
+      #' @export
+      #'
+      #' @examples fgsea_plot <- top_pathways(fgsea_results, 10)
+      top_pathways <- function(fgsea_results, num_paths){
+
+        fgsea_results %>%
+          mutate(pathway = forcats::fct_reorder(pathway, NES))
+
+        #getting min and max values for NES in the results tibble, merging them
+
+        lowest_NES <- slice_min(fgsea_results, NES, n = num_paths)
+
+        highest_NES <- slice_max(fgsea_results, NES, n= num_paths)
+
+        merged_top_res <- bind_rows(lowest_NES, highest_NES) %>%
+          arrange(NES) %>%
+          mutate(pathway = reorder(pathway, NES))
+        
+        
+        print(merged_top_res)
+
+        #make_plot
+        ggplot(merged_top_res) +
+          geom_bar(aes(x=pathway, y=NES, fill = as.character(sign(NES))), stat='identity', show.legend = FALSE) +
+          scale_fill_manual(values = c('1' = 'red', '-1' = 'blue')) +
+
+          theme_minimal() +
+          ggtitle('fgsea results for Hallmark MSigDB gene sets') +
+          ylab('Normalized Enrichment Score (NES)') +
+          xlab('')+
+          theme(axis.text.x = element_text(size=6))+
+          theme(axis.text.y = element_text(size = 4))+
+          coord_flip()
+
+
+      }
+      
+      output$fgsea_top_paths<- renderPlot({
+        
+        input$fgsea_barplot_do #links action button to pvalue slider
+        
+        top_pathways(fgsea_results = fgsea_output(), 
+                    num_paths = isolate(input$fgsea_barplot_range))
+        
+      })
+      
+      
       
       
         
   
 }
 
-#' 
-#' #' Function to generate a named vector ranked by log2FC descending
-#' #'
-#' #' @param labeled_results (tibble): Tibble with DESeq2 results and one
-#' #'   additional column denoting status in volcano plot
-#' #' @param id2gene_path (str): Path to the file containing the mapping of
-#' #' ensembl IDs to MGI symbols
-#' #'
-#' #' @return Named vector with gene symbols as names, and log2FoldChange as values
-#' #' ranked in descending order
-#' #' @export
-#' #'
-#' #' @examples rnk_list <- make_ranked_log2fc(labeled_results, 'data/id2gene.txt')
-#' 
-#' make_ranked_log2fc <- function(labeled_results, id2gene_path) {
-#'   
-#'   
-#'   #read in id2gene file 
-#'   columns <- c('ensemblids', 'gene_symbols') #adding column names to input
-#'   
-#'   id2gene <- read_delim(id2gene_path, delim='\t', col_names = columns, show_col_types = FALSE)
-#'   
-#'   
-#'   
-#'   #filter out NA rows in labeled results, merging labeled results with id2gene tibble 
-#'   lab_rank_res <- labeled_results %>%
-#'     drop_na() %>%
-#'     left_join(.,id2gene, by = c('genes' = 'ensemblids')) %>%
-#'     mutate(log2fc_ranks = rank(log2FoldChange, ties.method='random')) %>%
-#'     arrange(desc(log2fc_ranks))
-#'   
-#'   #create log2fc vector, then order it in descending order
-#'   
-#'   log2fc_vec <- lab_rank_res$log2FoldChange
-#'   
-#'   #adding the gene symbols
-#'   
-#'   names(log2fc_vec) <- lab_rank_res$gene_symbols
-#'   
-#'   return (log2fc_vec)  
-#'   
-#' }
-#' 
-#' #' Function to run fgsea with arguments for min and max gene set size
-#' #'
-#' #' @param gmt_file_path (str): Path to the gene sets of interest in GMT format
-#' #' @param rnk_list (named vector): Named vector generated previously with gene 
-#' #' symbols and log2Fold Change values in descending order
-#' #' @param min_size (int): Minimum number of genes in gene sets to be allowed
-#' #' @param max_size (int): Maximum number of genes in gene sets to be allowed
-#' #'
-#' #' @return Tibble of results from running fgsea
-#' #' @export
-#' #'
-#' #' @examples fgsea_results <- run_fgsea('data/m2.cp.v2023.1.Mm.symbols.gmt', rnk_list, 15, 500)
-#' run_fgsea <- function(gmt_file_path, rnk_list, min_size, max_size) {
-#'   
-#'   #reading in the gene set
-#'   
-#'   hallmark_pathways_fgsea <- fgsea::gmtPathways(gmt_file_path)
-#'   
-#'   #running fgsea
-#'   
-#'   fgsea_results <- fgsea(hallmark_pathways_fgsea, rnk_list, minSize = min_size, maxSize= max_size)
-#'   fgsea_results <- fgsea_results %>% as_tibble()
-#'   
-#'   return(fgsea_results)
-#' }
-#' 
-#' #' Function to plot top ten positive NES and top ten negative NES pathways
-#' #' in a barchart
-#' #'
-#' #' @param fgsea_results (tibble): the fgsea results in tibble format returned by
-#' #'   the previous function
-#' #' @param num_paths (int): the number of pathways for each direction (top or
-#' #'   down) to include in the plot. Set this at 10.
-#' #'
-#' #' @return ggplot with a barchart showing the top twenty pathways ranked by positive
-#' #' and negative NES
-#' #' @export
-#' #'
-#' #' @examples fgsea_plot <- top_pathways(fgsea_results, 10)
-#' top_pathways <- function(fgsea_results, num_paths){
-#'   
-#'   fgsea_results %>%
-#'     mutate(pathway = forcats::fct_reorder(pathway, NES)) 
-#'   
-#'   #getting min and max values for NES in the results tibble, merging them
-#'   
-#'   lowest_NES <- slice_min(fgsea_results, NES, n = num_paths)
-#'   
-#'   highest_NES <- slice_max(fgsea_results, NES, n= num_paths)
-#'   
-#'   merged_top_res <- bind_rows(lowest_NES, highest_NES) %>%
-#'     arrange(NES) %>%
-#'     mutate(pathway = reorder(pathway, NES))
-#'   
-#'   #make_plot 
-#'   ggplot(merged_top_res) +
-#'     geom_bar(aes(x=pathway, y=NES, fill = as.character(sign(NES))), stat='identity', show.legend = FALSE) +
-#'     scale_fill_manual(values = c('1' = 'red', '-1' = 'blue')) + 
-#'     
-#'     theme_minimal() +
-#'     ggtitle('fgsea results for Hallmark MSigDB gene sets') +
-#'     ylab('Normalized Enrichment Score (NES)') +
-#'     xlab('')+
-#'     theme(axis.text.x = element_text(size=6))+
-#'     theme(axis.text.y = element_text(size = 4))+ 
-#'     coord_flip()
-#'   
-#'   
-#' }
+
+
 
 
 
