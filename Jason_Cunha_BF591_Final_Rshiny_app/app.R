@@ -18,8 +18,18 @@ library(ggplot2)
 library(colourpicker) # you might need to install this
 library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
-library('fgsea')
-library('biomaRt')
+library(fgsea)
+library(biomaRt)
+
+
+
+
+library(data.table)#delete if not necessary
+
+
+
+
+library(purrr) #delete if not necessary
 
 #heatmap libraries (delete the ones you don't use)
 library(pheatmap) #used for creating clustered counts heatmap
@@ -182,15 +192,28 @@ ui <- fluidPage(
                                     
                                     tabPanel("Log2 Fold-Changes Histogram", plotOutput("logfc_hist")),
                                     
-                                    tabPanel("Top 10 Normalized Counts",),
-                                    
-                                    tabPanel("Volcano Plot of DE Results", plotOutput("volc_plot"))
+                                    tabPanel("Volcano Plot of DE Results", 
                                              
-                              
+                                             fluidRow(sidebarPanel(   #adding two bars to select the base and highlight point colors
+                                               
+                                               h5("Base point color"),
+                                               colourInput("volc_col",NULL, "#22577A"), #base point color
+                                               h5("Highlight point color"),
+                                               colourInput("volc_col2", NULL, "#FFCF56"), #highlight point color
+                                               
+                                               #Slider to filter table by adjusted pvalue
+                                               tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
+                                               sliderInput("volc_plot_range", "Select -log10(adjusted p-value) to filter DESeq2 results:",
+                                                           min = 0, max = 35,
+                                                           value = 15),
+                                               
+                                               actionButton("volc_do", "Filter", width = "100%", icon = icon("filter"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
+                                            
+                                               ), column(8, plotOutput("volc_plot"))))
+                                             
+                                      
                                              )
-                                    
-                                    
-                                    
+
                                     )
                            
                          )) 
@@ -224,13 +247,14 @@ ui <- fluidPage(
                 
                              #Slider to select number of top pathways to plot based on adjusted p-value
                              tags$style(HTML(".js-irs-0 .irs-single, .js-irs-0 .irs-bar-edge, .js-irs-0 .irs-bar {background: #66cc99; color: black}")),
-                             sliderInput("fgsea_barplot_range", "Select the number of top pathways to plot based on adjusted p-value:",
-                                         min = 1, max = 100,
-                                         value = 10),
+                             numericInput("fgsea_barplot_range", "Select the number of top pathways to plot based on adjusted p-value:",
+                                         min = 0, value = 10),
+
+  
                              actionButton("fgsea_barplot_do", "Plot", width = "100%", icon = icon("brush"), style = "color: black; background-color: #66cc99; border-color: #66cc99")
                            
                 
-                           ), column(8, plotOutput("fgsea_top_paths")))
+                           ), plotOutput("fgsea_top_paths"))
                                     
                            ),
                            
@@ -438,8 +462,8 @@ server <- function(input, output) {
     filtered_counts <- count_df %>%
       
       filter(
-        rowSums(count_df != 0) > count_filter &
-          apply(count_df, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+        rowSums(count_df != 0) >= count_filter &
+          apply(count_df, 1, function(row)  var(row) >= var_filter)
         
       )
 
@@ -488,18 +512,21 @@ server <- function(input, output) {
     
 
     med_var_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = log10(gene_variance)))+
-      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter &
-                                      apply(count_info_data, 1, function(row) quantile(row, prob = var_filter / 100) > 0),
-                                    "Passed", "Filtered Out")))+
+      geom_point(aes(color = ifelse(
+                                      apply(count_info_data, 1, function(row) var(row) >= var_filter),
+                                    "Passed", "Filtered Out")), position = "jitter")+
       scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
-      theme_bw()
+      theme_bw()+
+      labs(title = "log10(Gene Variance) vs. Ranked Median Counts",
+           color = "Genes Passing Variance Filter")
 
     med_zeros_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = sum_zero_counts))+
-      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter &
-                                      apply(count_info_data, 1, function(row) quantile(row, prob = var_filter / 100) > 0),
-                                    "Passed", "Filtered Out")))+
+      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter ,
+                                    "Passed", "Filtered Out")), position = "jitter")+
       scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
-      theme_bw()
+      theme_bw()+
+      labs(title = "Sum of Zero Count Samples vs. Ranked Median Counts",
+           color = "Genes Passing Counts Filter")
 
     med_var_scatter / med_zeros_scatter #create figure with both scatter plots
 
@@ -507,7 +534,7 @@ server <- function(input, output) {
   
   output$count_summary_scatters <- renderPlot({
     
-    input$do #connects slider input to action buttion
+    input$do #connects slider input to action button
     
     counts_diagnostic_scatterplots(count_info_data = counts_data(),
                                    var_filter = isolate(input$var_range), 
@@ -530,64 +557,105 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   filtered_counts <- count_info_data %>%
 
     filter(
-      rowSums(count_info_data != 0) > count_filter &
-        apply(count_info_data, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+      rowSums(count_info_data != 0) >= count_filter &
+        apply(count_info_data, 1, function(row) var(row) >= var_filter)
 
     ) 
 
-  filtered_counts_matrix <- as.matrix(filtered_counts)
   
-  # Reorder columns based on control and disease samples
-  control_columns <- grep("^C_", colnames(filtered_counts_matrix))
-  disease_columns <- grep("^H_", colnames(filtered_counts_matrix))
-  all_columns <- c(control_columns, disease_columns)
-  filtered_counts_matrix <- filtered_counts_matrix[, all_columns]
+  # Extract the counts matrix without row names and column names
+  counts_matrix <- as.matrix(filtered_counts[, -1])
+  
+  # Log10 transformation
+  log10_filtered_matrix <- log10(1 + counts_matrix)
+  
+  # Add back row names and column names to the log10-transformed matrix
+  rownames(log10_filtered_matrix) <- filtered_counts$gene_column_name  # Replace 'gene_column_name' with the actual column name
+  colnames(log10_filtered_matrix) <- colnames(counts_matrix)
+  
+  # # Reorder columns based on control and disease samples
+  # control_columns <- grep("^C_", colnames(log10_filtered_matrix))
+  # disease_columns <- grep("^H_", colnames(log10_filtered_matrix))
+  # all_columns <- c(control_columns, disease_columns)
+  # log10_filtered_matrix <- log10_filtered_matrix[, all_columns]
   
   
-  # log10_filtered_matrix <- log10(filtered_counts_matrix)
+  
+  # filtered_counts_matrix <- as.matrix(filtered_counts)
+  # 
+  # # Reorder columns based on control and disease samples
+  # control_columns <- grep("^C_", colnames(filtered_counts_matrix))
+  # disease_columns <- grep("^H_", colnames(filtered_counts_matrix))
+  # all_columns <- c(control_columns, disease_columns)
+  # filtered_counts_matrix <- filtered_counts_matrix[, all_columns]
+  # 
+  # 
+  # # log10_filtered_matrix <- log10(filtered_counts_matrix)
+  # 
+  # 
+  # 
+  # # Subset the matrix to include all columns and the first 30 rows
+  # #subset_counts <- filtered_counts_matrix[1:1000, ]
+  # 
+# 
+#   # Create a vector to specify the order of columns
+#   column_order <- c(control_columns, disease_columns)
+#   
+#   # Plot heatmap using pheatmap
+#   # Plot heatmap using pheatmap
+#   pheatmap(
+#     log10_filtered_matrix,
+#     clustering_method = "complete",  # You can change the clustering method as needed
+#     cluster_cols = FALSE,  # Disable column clustering
+#     color = colorRampPalette(c("white", "blue"))(100),  # Set color palette
+#     main = "Heatmap of Log10 Transformed Counts"
+#   )
+#   
+  
+  
 
+  #make heatmap
 
-  
-  # Subset the matrix to include all columns and the first 30 rows
-  subset_counts <- filtered_counts_matrix[1:30, ]
-  
-
-  
-  #make heatmap 
-
-  heatmap.2(subset_counts, 
-            dendrogram = "column",
+  heatmap.2(log10_filtered_matrix,
+            #dendrogram = "column",
             key = TRUE,
             density.info = "none",
-            trace = "none", 
-            Colv = as.dendrogram(hclust(dist(subset_counts))),
+            trace = "none",
+
             sepwidth = c(0.2, 0.2),         # Set width for column separations
             margins = c(10, 5),             # Adjust top and bottom margins
             main = "Heatmap of Counts",     # Add a main title
             cex.main = 2 ,                   # Set main title font size
-            key.xlab = "Samples",  
-            key.ylab = "Genes")
+            key.xlab = "Samples",
+            key.ylab = "Genes"
+            # col = colorRampPalette(c("white", "blue"))(100),  # Set color palette
+            # ColSideColors = rep(c("red", "blue"), each = length(all_columns) / 2),  # Specify column group colors
+            # reorderfun = function(d, w) reorder(d, w, agglo.FUN = mean),
+            # ColSideFun = function(x) {
+            #   ifelse(x == "red", 1, 2)
+            # },
+            # ColSideWidth = 1.5
+            )
   
   # pheatmap(filtered_counts_matrix, scale = "row",
   #          color=colorRampPalette(c("white", "red"))(50))
   
-  # #melt the data and add a factor column with HD and Control labels so we can make heatmap
-  # 
-  # melted_mat <- melt(subset_counts)
+  # # #melt the data and add a factor column with HD and Control labels so we can make heatmap
+  # # 
+  # melted_mat <- melt(log10_filtered_matrix)
   # colnames(melted_mat) <- c("genes", "samples", "counts")
   # mutate(melted_mat, condition = ifelse(grepl("^H_", samples), "HD", "Control"))
   # 
   # 
+  # # 
+  # # # Make heatmap with the subset
   # 
-  # # Make heatmap with the subset
-  # # heatmap(filtered_counts_matrix, color = colorRampPalette(c("white", "blue"))(100), show_colnames = FALSE)
-  # 
-  # ggplot(melted_mat, aes(x = samples, y = genes, fill = log10(counts)))+
+  # ggplot(melted_mat, aes(x = samples, y = genes, fill = counts))+
   #   geom_tile()+
   #   scale_x_discrete()
   #   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-  #     
-  #   
+
+
 
 }
 
@@ -674,7 +742,8 @@ output$count_heat <- renderPlot({
 
     })
   
-  
+ 
+   
   
   ##DIFFERENTIAL EXPRESSION ANALYSIS RESULTS FUNCTIONS
 
@@ -792,48 +861,47 @@ output$count_heat <- renderPlot({
       
       
       
-      #' Function to generate volcano plot from DESeq2 results. Before plotting, the function
+      #' Volcano plot
       #'
-      #' @param labeled_results (tibble): Tibble with DESeq2 results
+      #' @param dataf The loaded data frame.
+      #' @param slider A negative integer value representing the magnitude of
+      #' p-adjusted values to color. Most of our data will be between -1 and -300.
+      #' @param color1 One of the colors for the points.
+      #' @param color2 The other colors for the points. Hexadecimal strings: "#CDC4B5"
       #'
-      #' @return ggplot: a scatterplot (volcano plot) that displays log2foldchange vs
-      #'   -log10(padj) and labeled by status
-      #' @export
-      #'
-      #' @examples volcano_plot <- plot_volcano(labeled_results)
-      #'
-      plot_volcano <- function(deseq2_results, padj_threshold) {
+      #' @return A ggplot object of a volcano plot
+      #' @details I bet you're tired of these plots by now. Me too, don't worry.
+      #' This is _just_ a normal function. No reactivity, no bells, no whistles. 
+      #' Write a normal volcano plot using geom_point, and integrate all the above 
+      #' values into it as shown in the example app. The testing script will treat 
+      #' this as a normal function.
 
-        volc_data <- deseq2_results %>%
+      #'
+      #' @examples volcano_plot(df, "blue", "taupe")
+      volcano_plot <- function(deseq2_results, slider, color1, color2) {
+        
+        
+        gg <- ggplot(deseq2_results, aes(x = log2FoldChange, y = -log10(padj))) +
+          geom_point(aes(color = ifelse(-log10(padj) < slider, "FALSE", "TRUE")), size = 0.5)+
+          scale_color_manual(values = c("TRUE" = color2, "FALSE"= color1))+
+          theme_bw()+
+          geom_hline(yintercept = 0, linetype = "dashed") +
           
-          #adding expression status annotations based on padj threshold
-          
-          mutate(volc_plot_status = case_when(padj < padj_threshold & log2FoldChange > 0 ~ 'UP',
-                                              padj < padj_threshold & log2FoldChange < 0 ~ 'DOWN',
-                                              TRUE ~ 'NS')) %>%
-          
-
-          #add -log10(padj) column to input tibble
-          mutate(`-log10(adjusted p)`=-log10(padj),)
-
-
-          gg4 <- ggplot(volc_data, aes(x=log2FoldChange,y=`-log10(adjusted p)`, color = volc_plot_status)) +
-            geom_point()+
-            theme_bw()+
-            geom_hline(yintercept = 0, linetype = "dashed") +
-            labs(x = 'log2FoldChange', y = '-log10(padj)', title = 'Volcano plot of DESeq2 differential expression results (HD vs. Control)')
-
-          gg4
-
-
+          labs(x = "log2FoldChange", y = "-log10(padj)", 
+               title = 'Volcano plot of DESeq2 differential expression results',
+               color = paste("-log10(padj) >=", slider))+
+          theme(legend.position = "bottom")
+        return(gg)
       }
 
       output$volc_plot<- renderPlot({
         
-        input$deseq_do #links action button to pvalue slider
+        input$volc_do #links action button to pvalue slider
         
-        plot_volcano(deseq2_results = load_deseq_output(),
-                     padj_threshold = isolate(input$padj_range)
+        volcano_plot(deseq2_results = load_deseq_output(),
+                     slider = isolate(input$volc_plot_range),
+                     color1 = isolate(input$volc_col),
+                     color2 = isolate(input$volc_col2)
                      )
         
       })
@@ -948,12 +1016,13 @@ output$count_heat <- renderPlot({
           }
           
           #convert to tibble, 
-          
-         fgsea_results <-  as_tibble(fgsea_results)
-         
+           
+           as_tibble(fgsea_results)
+         # 
+         #unlist leading edge column, turn into characters
 
+          
         return(fgsea_results)
-        #datatable(fgsea_results, rownames = TRUE, options = list(pageLength = 50))
       }
         
       
@@ -962,6 +1031,8 @@ output$count_heat <- renderPlot({
       fgsea_output <- reactive({
         
         input$fgsea_table_do #connect table functionality to action button
+        
+        Sys.sleep(0.1)  # Throttle for 0.1 seconds
 
             run_fgsea(deseq2_results = load_deseq_output(),
                           gmt_gene_sets = load_gene_sets(),
@@ -989,58 +1060,30 @@ output$count_heat <- renderPlot({
 
       })
       
-      
-      
-    # #create a special fgsea output variable for downloading purposes
-    #   
-    #   data <- renderPrint({
-    #     
-    #     df <- apply(fgsea_output(), 2, as.character)
-    #     
-    #     return(df)
-    #     
-    #   })
-    #   
-    #   
-    #   #add download functionality to run_fgsea
-    # 
-    #   output$download_fgsea_table <- downloadHandler(
-    # 
-    #     filename = function(){
-    #       paste("filtered_fgsea_table", Sys.Date(), ".csv", sep = "_")
-    #     },
-    # 
-    #     content = function(file){
-    #       write.csv(apply(fgsea_output(), 2, as.character), row.names = FALSE)
-    # 
-    #     })
-      
-      
-      
-      
 
 
-#       #add download functionality to run_fgsea
-#       
-#       output$download_fgsea_table <- downloadHandler(
-#         
-#         filename = function(){
-#           paste("filtered_fgsea_table", Sys.Date(), ".csv", sep = "_")
-#         },
-#         
-#         content = function(file){
-#           write.csv(run_fgsea(deseq2_results = load_deseq_output(),
-#                                     gmt_gene_sets = load_gene_sets(),
-#                                     id2gene_file = load_id2gene_file(),
-#                                     min_size = isolate(input$minval),
-#                                     max_size = isolate(input$maxval),
-#                                     padj_threshold = isolate(input$fgsea_table_range),
-#                                     nes_filter = isolate(input$select_nes_pathways)), file, row.names = FALSE)
-#           
-#           
-#       
-#         })
-      
+      #add download functionality to run_fgsea
+
+      output$download_fgsea_table <- downloadHandler(
+
+
+
+        filename = function(){
+          paste("filtered_fgsea_table", Sys.Date(), ".csv", sep = "_")
+        },
+
+        content = function(file){
+
+          # # Convert all columns in fgsea_output to character vectors
+          
+          df <- fgsea_output()
+          df <- apply(df, 2, as.character)
+
+          #fwrite(fgsea_output)
+          write.csv(df, file, row.names = FALSE)
+
+        })
+
       
       #' Function to plot top ten positive NES and top ten negative NES pathways
       #' in a barchart
@@ -1057,22 +1100,15 @@ output$count_heat <- renderPlot({
       #' @examples fgsea_plot <- top_pathways(fgsea_results, 10)
       top_pathways <- function(fgsea_results, num_paths){
 
-        fgsea_results %>%
-          mutate(pathway = forcats::fct_reorder(pathway, NES))
-
-        #getting min and max values for NES in the results tibble, merging them
-
-        lowest_NES <- slice_min(fgsea_results, NES, n = num_paths)
-
-        highest_NES <- slice_max(fgsea_results, NES, n= num_paths)
-
-        merged_top_res <- bind_rows(lowest_NES, highest_NES) %>%
+        top_paths <- fgsea_results %>%
           arrange(NES) %>%
-          mutate(pathway = reorder(pathway, NES))
+          slice_head(n = num_paths) %>%
+          bind_rows(fgsea_results %>% arrange(desc(NES)) %>% slice_head(n = num_paths))
         
-
+          
         #make_plot
-        ggplot(merged_top_res) +
+        ggplot(top_paths) +
+          
           geom_bar(aes(x=pathway, y=NES, fill = as.character(sign(NES))), stat='identity', show.legend = FALSE) +
           scale_fill_manual(values = c('1' = 'red', '-1' = 'blue')) +
 
@@ -1080,10 +1116,9 @@ output$count_heat <- renderPlot({
           ggtitle('fgsea results for Hallmark MSigDB gene sets') +
           ylab('Normalized Enrichment Score (NES)') +
           xlab('')+
-          theme(axis.text.x = element_text(size=6))+
-          theme(axis.text.y = element_text(size = 4))+
+          theme(axis.text.x = element_text(size=12))+
+          theme(axis.text.y = element_text(size = 12))+
           coord_flip()
-
 
       }
       
