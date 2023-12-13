@@ -20,22 +20,9 @@ library(DT) #used for interactive tables
 library(patchwork) #used for creating multi-panel figures
 library(fgsea)
 library(biomaRt)
-
-
-
-
-library(data.table)#delete if not necessary
-
-
-
-
-library(purrr) #delete if not necessary
-
-#heatmap libraries (delete the ones you don't use)
-library(pheatmap) #used for creating clustered counts heatmap
-library(reshape) #used for "melting" counts data to make heatmap
-library(ggplotify) ## to convert pheatmap to ggplot2
 library(gplots) # used for heatmap.2()
+library(purrr) 
+
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -340,6 +327,7 @@ server <- function(input, output) {
   
   #' sample_info_summary
   #'@details takes sample information data, creates special summary table with means of continuous variables
+  #'@param sum_data (df): a data frame with sample information
   
   
   sample_info_summary <- function(sum_data){
@@ -382,7 +370,7 @@ server <- function(input, output) {
   
   #' sample_data_table
   #'@details takes sample information data, displays it as a sortable table
-  
+  #'@param sum_data (df): a data frame with sample information
   
   sample_data_table <- function(sum_data){
     
@@ -400,6 +388,7 @@ server <- function(input, output) {
   
   #' continuous_sample_histograms
   #'@details creates histogram plots of continuous variables in the input sample data frame
+  #'@param sum_data (df): a data frame with sample information
   
   
   continuous_sample_histograms <- function(sum_data){
@@ -450,6 +439,9 @@ server <- function(input, output) {
   #'@details creates table that summarizes effects of counts filtering, including:
   #'number of samples, total number of genes, number and % of genes passing current filter,
   #'number and % of genes not passing current filter
+  #'@param count_info_data(df): a data frame with counts information
+  #'@param var_filter (int): a variance percentile value for which to filter the counts
+  #'@param count_filter (int): a number of zero counts per gene to use for filtering
 
   
   
@@ -462,8 +454,9 @@ server <- function(input, output) {
     filtered_counts <- count_df %>%
       
       filter(
-        rowSums(count_df != 0) >= count_filter &
-          apply(count_df, 1, function(row)  var(row) >= var_filter)
+        rowSums(. != 0) >= count_filter &
+          apply(count_no_na, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+        
         
       )
 
@@ -493,6 +486,12 @@ server <- function(input, output) {
   #'@details creates two scatter plots that show genes ranked by median count vs. log10(variance) and
   #' genes ranked by median count vs. number of zeros for each gene that passes the filters. Genes
   #' Passing filters are in darker colors, filtered genes in lighter color
+  #'@param count_info_data(df): a data frame with counts information
+  #'@param var_filter (int): a variance percentile value for which to filter the counts
+  #'@param count_filter (int): a number of zero counts per gene to use for filtering
+  #'@param color_1: a color to indicate which counts passed the filters
+  #''@param color_2: a color to indicate which counts did not the filters
+  
   
   
   counts_diagnostic_scatterplots <- function(count_info_data, var_filter, count_filter, color_1, color_2){
@@ -547,6 +546,9 @@ server <- function(input, output) {
   #' counts_filtered_heatmap
   #'@details creates a clustered heatmap of counts remaining after filtering. Counts
   #'are log10-transformed before plotting
+  #'@param count_info_data(df): a data frame with counts information
+  #'@param var_filter (int): a variance percentile value for which to filter the counts
+  #'@param count_filter (int): a number of zero counts per gene to use for filtering
 
 
 counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
@@ -573,47 +575,6 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   rownames(log10_filtered_matrix) <- filtered_counts$gene_column_name  # Replace 'gene_column_name' with the actual column name
   colnames(log10_filtered_matrix) <- colnames(counts_matrix)
   
-  # # Reorder columns based on control and disease samples
-  # control_columns <- grep("^C_", colnames(log10_filtered_matrix))
-  # disease_columns <- grep("^H_", colnames(log10_filtered_matrix))
-  # all_columns <- c(control_columns, disease_columns)
-  # log10_filtered_matrix <- log10_filtered_matrix[, all_columns]
-  
-  
-  
-  # filtered_counts_matrix <- as.matrix(filtered_counts)
-  # 
-  # # Reorder columns based on control and disease samples
-  # control_columns <- grep("^C_", colnames(filtered_counts_matrix))
-  # disease_columns <- grep("^H_", colnames(filtered_counts_matrix))
-  # all_columns <- c(control_columns, disease_columns)
-  # filtered_counts_matrix <- filtered_counts_matrix[, all_columns]
-  # 
-  # 
-  # # log10_filtered_matrix <- log10(filtered_counts_matrix)
-  # 
-  # 
-  # 
-  # # Subset the matrix to include all columns and the first 30 rows
-  # #subset_counts <- filtered_counts_matrix[1:1000, ]
-  # 
-# 
-#   # Create a vector to specify the order of columns
-#   column_order <- c(control_columns, disease_columns)
-#   
-#   # Plot heatmap using pheatmap
-#   # Plot heatmap using pheatmap
-#   pheatmap(
-#     log10_filtered_matrix,
-#     clustering_method = "complete",  # You can change the clustering method as needed
-#     cluster_cols = FALSE,  # Disable column clustering
-#     color = colorRampPalette(c("white", "blue"))(100),  # Set color palette
-#     main = "Heatmap of Log10 Transformed Counts"
-#   )
-#   
-  
-  
-
   #make heatmap
 
   heatmap.2(log10_filtered_matrix,
@@ -628,34 +589,7 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
             cex.main = 2 ,                   # Set main title font size
             key.xlab = "Samples",
             key.ylab = "Genes"
-            # col = colorRampPalette(c("white", "blue"))(100),  # Set color palette
-            # ColSideColors = rep(c("red", "blue"), each = length(all_columns) / 2),  # Specify column group colors
-            # reorderfun = function(d, w) reorder(d, w, agglo.FUN = mean),
-            # ColSideFun = function(x) {
-            #   ifelse(x == "red", 1, 2)
-            # },
-            # ColSideWidth = 1.5
             )
-  
-  # pheatmap(filtered_counts_matrix, scale = "row",
-  #          color=colorRampPalette(c("white", "red"))(50))
-  
-  # # #melt the data and add a factor column with HD and Control labels so we can make heatmap
-  # # 
-  # melted_mat <- melt(log10_filtered_matrix)
-  # colnames(melted_mat) <- c("genes", "samples", "counts")
-  # mutate(melted_mat, condition = ifelse(grepl("^H_", samples), "HD", "Control"))
-  # 
-  # 
-  # # 
-  # # # Make heatmap with the subset
-  # 
-  # ggplot(melted_mat, aes(x = samples, y = genes, fill = counts))+
-  #   geom_tile()+
-  #   scale_x_discrete()
-  #   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-
-
 
 }
 
@@ -673,23 +607,20 @@ output$count_heat <- renderPlot({
   
   
   #' counts_pca_plot
-  #'@details conducts principal components analysis (PCA) and generates a scatterplot
+  #'@details conducts principal components analysis (PCA) and generates a scatter plot
   #' of PCA results for filtered counts
-  
   #'
-  #' @param data tibble: a (n x _S_) data set
-  #' @param meta tibble: sample-level meta information (_S_ x 3)
-  #' @param title string: title for plot
+  #' @param data (tib): a (n x _S_) data set
+  #' @param x_axis (string): which principal component to plot on the x-axis
+  #' @param y_axis (string): which principal component to plot on the y-axis
   #'
   #' @return ggplot: scatter plot showing each sample in the first two PCs.
   #'
   #' @examples
   #' `plot_pca(data, meta, "Raw Count PCA")`
   
-  counts_pca_plot <- function(count_info_data, x_axis, y_axis, title="") {
+  counts_pca_plot <- function(count_info_data, x_axis, y_axis) {
     
-    #put samples in rows
-
 
       #do pca on transposed counts matrix (samples as rows, columns as genes)
     pca <- prcomp(
@@ -726,7 +657,7 @@ output$count_heat <- renderPlot({
       
       labs(x = paste0(x_axis,': ', round(x_component,1), '% variance'),
            y = paste0(y_axis, ': ', round(y_component,1), '% variance'),
-           title = title)
+           title = "Counts Principal Components Analysis Results")
 
     return(pca_gg)
   }
@@ -764,6 +695,8 @@ output$count_heat <- renderPlot({
   #' deseq_results_table
   #'@details takes DESEQ2 differential expression analysis results, adds an additional column
   #'indicating upregulation/downregulation/NS, and outputs a stortable table with gene search functionality
+  #'@param deseq_mat (df): a data frame containing deseq2 results
+  #'@param padj_threshold (num): an adjusted p-value number for which to filter the deseq results 
   
   
   deseq_results_table <- function(deseq_mat, padj_threshold){
@@ -800,7 +733,7 @@ output$count_heat <- renderPlot({
 
     #' Function to plot the unadjusted p-values as a histogram
     #'
-    #' @param labeled_results (tibble): Tibble with DESeq2 results
+    #' @param deseq_results (tib): Tibble with DESeq2 results
     #'
     #' @return ggplot: a histogram of the raw p-values from the DESeq2 results
     #' @export
@@ -825,16 +758,14 @@ output$count_heat <- renderPlot({
     
     
 
-      #' Function to plot the log2foldchange from DESeq2 results in a histogram
+      #' Function to plot the log2FoldChange from DESeq2 results in a histogram
       #'
       #' @param labeled_results (tibble): Tibble with DESeq2 results 
       #' @param padj_threshold (float): threshold for considering significance (padj)
       #'
       #' @return ggplot: a histogram of log2FC values from genes significant at padj
-      #' threshold of 0.1
-      #' @export
-      #'
-      #' @examples log2fc_plot <- plot_log2fc(deseq2_results, .10)
+      #' threshold
+
       plot_log2fc <- function(deseq2_results, padj_threshold) {
 
         #filter input to only include results within defined padj_threshold
@@ -870,11 +801,8 @@ output$count_heat <- renderPlot({
       #' @param color2 The other colors for the points. Hexadecimal strings: "#CDC4B5"
       #'
       #' @return A ggplot object of a volcano plot
-      #' @details I bet you're tired of these plots by now. Me too, don't worry.
-      #' This is _just_ a normal function. No reactivity, no bells, no whistles. 
-      #' Write a normal volcano plot using geom_point, and integrate all the above 
-      #' values into it as shown in the example app. The testing script will treat 
-      #' this as a normal function.
+      #' @details Returns a volcano plot of -log10(adjusted-p values) and log2Fold Change
+      #' of DESEQ2 results
 
       #'
       #' @examples volcano_plot(df, "blue", "taupe")
@@ -930,7 +858,8 @@ output$count_heat <- renderPlot({
       
       
       #' load_genes
-      #'@details loads a .gmt file with gene sets of interest for fgsea
+      #'@details loads a .gmt file with gene sets of interest for fgsea, returns it as a list to use in the
+      #'fgsea function
 
       load_gene_sets<- reactive({
 
@@ -954,15 +883,13 @@ output$count_heat <- renderPlot({
 
       #' Function to generate fgsea results, using a vector ranked by log2FC descending
       #'
-      #' @param labeled_results (tibble): Tibble with DESeq2 results 
-      #' @param id2gene_file: Path to the file containing the mapping of
-      #' ensembl IDs to MGI symbols
-
-      #' @return Named vector with gene symbols as names, and log2FoldChange as values
-      #' ranked in descending order
-      #' @export
-      #'
-      #' @examples rnk_list <- make_ranked_log2fc(labeled_results, 'data/id2gene.txt')
+      #' @param labeled_results (tib): Tibble with DESeq2 results 
+      #' @param gmt_gene_sets (list): a list of gene sets to use in fgsea 
+      #' @param min_size (int): the minimum gene set size to use in fgsea
+      #' @param max_size (int): the maximum gene set size to use in fgse
+      #' @param id2gene_file (text file): Path to the file containing the mapping ofensembl IDs to MGI symbols
+      #' @param padj_threshold (num): adjusted p-value for which to filter fgsea results
+      #' @param nes_filter (int): NES value for which to filter fgsea results
       
       
       run_fgsea <- function(deseq2_results, gmt_gene_sets, id2gene_file, min_size, max_size, padj_threshold, nes_filter) {
@@ -1018,8 +945,6 @@ output$count_heat <- renderPlot({
           #convert to tibble, 
            
            as_tibble(fgsea_results)
-         # 
-         #unlist leading edge column, turn into characters
 
           
         return(fgsea_results)
@@ -1088,15 +1013,14 @@ output$count_heat <- renderPlot({
       #' Function to plot top ten positive NES and top ten negative NES pathways
       #' in a barchart
       #'
-      #' @param fgsea_results (tibble): the fgsea results in tibble format returned by
+      #' @param fgsea_results (tib): the fgsea results in tibble format returned by
       #'   the previous function
       #' @param num_paths (int): the number of pathways for each direction (top or
       #'   down) to include in the plot. Set this at 10.
       #'
       #' @return ggplot with a barchart showing the top twenty pathways ranked by positive
       #' and negative NES
-      #' @export
-      #'
+
       #' @examples fgsea_plot <- top_pathways(fgsea_results, 10)
       top_pathways <- function(fgsea_results, num_paths){
 
@@ -1137,9 +1061,8 @@ output$count_heat <- renderPlot({
       #'fgsea results, with values below padjusted threshold in gray 
       
       #'
-      #' @param data tibble: a (n x _S_) data set
-      #' @param meta tibble: sample-level meta information (_S_ x 3)
-      #' @param title string: title for plot
+      #' @param data (tib): a tibble of fgsea results
+      #' @param padj_threshold (num): adjusted p-value for which to filter fgsea results
       #'
       #' @return ggplot: scatter plot showing each sample in the first two PCs.
       #'
@@ -1173,26 +1096,8 @@ output$count_heat <- renderPlot({
                            padj_threshold = isolate(input$fgsea_scatter_range))
         
       })
-      
-      
-      
-      
-      
-      
-      
-      
-        
-  
+       
 }
-
-
-
-
-
-
-
-
-
 
 # Run the application 
 shinyApp(ui = ui, server = server)
