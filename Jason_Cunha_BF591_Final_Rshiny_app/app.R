@@ -443,31 +443,39 @@ server <- function(input, output) {
   #'@param var_filter (int): a variance percentile value for which to filter the counts
   #'@param count_filter (int): a number of zero counts per gene to use for filtering
 
-  
-  
   counts_summary_table <- function(count_info_data, var_filter, count_filter){
 
-    count_df <- counts_data() 
-    
+
     #filtering step
     
-    filtered_counts <- count_df %>%
+    #calculate row/gene variances
+    
+    gene_variances <- apply(count_info_data, 1, var)
+    
+    #convert slider value to probability value between 0 and 1
+    
+    var_filter_prob <- var_filter/100 
+    
+    #calculate variance threshold
+    
+    var_threshold <- quantile(gene_variances, var_filter_prob)
+    
+    filtered_counts <- count_info_data %>%
       
       filter(
         rowSums(. != 0) >= count_filter &
-          apply(count_no_na, 1, function(row) quantile (row, prob = var_filter/100) > 0)
+          apply(., 1, function(row) var(row) >= var_threshold)
         
         
       )
 
   #create new tibble with all the info we want
-  count_summary_tib <- tibble(
-
-    "Number of Samples" = ncol(count_df),
-    "Total Number of Genes" = nrow(count_df),
-    "Number and % of Genes Passing Filters" = paste0(nrow(filtered_counts), " ( ", round((nrow(filtered_counts)/nrow(count_df))*100, 2), "%)"),
-    "Number and % of Genes Not Passing Filters" =  paste0(nrow(count_df) - nrow(filtered_counts), " ( ", round(((nrow(count_df) - nrow(filtered_counts))/nrow(count_df))*100, 2), "%)")
-  )
+    count_summary_tib <- tibble(
+      "Number of Samples" = ncol(count_info_data),
+      "Total Number of Genes" = nrow(count_info_data),
+      "Number and % of Genes Passing Filters" = paste0(nrow(filtered_counts), " ( ", round((nrow(filtered_counts)/nrow(count_info_data))*100, 2), "%)"),
+      "Number and % of Genes Not Passing Filters" =  paste0(nrow(count_info_data) - nrow(filtered_counts), " ( ", round(((nrow(count_info_data) - nrow(filtered_counts))/nrow(count_info_data))*100, 2), "%)")
+    )
 
   datatable(count_summary_tib, rownames = FALSE)
 }
@@ -499,6 +507,21 @@ server <- function(input, output) {
     #creating a tibble storing the gene medians, variances, the sum of zero 
     #counts for each gene, and rankings
     
+    #filtering steps
+    
+    #calculate row/gene variances
+    
+    gene_variances <- apply(count_info_data, 1, var)
+    
+    #convert slider value to probability value between 0 and 1
+    
+    var_filter_prob <- var_filter/100 
+    
+    #calculate variance threshold
+    
+    var_threshold <- quantile(gene_variances, var_filter_prob)
+  
+    
     result_tib <- count_info_data %>%
       
       tibble("gene_count_medians" = apply(dplyr::select(.,-1), 1, median),
@@ -511,21 +534,22 @@ server <- function(input, output) {
     
 
     med_var_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = log10(gene_variance)))+
-      geom_point(aes(color = ifelse(
-                                      apply(count_info_data, 1, function(row) var(row) >= var_filter),
+      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) >= count_filter &
+                                    apply(count_info_data, 1, function(row) var(row) >= var_threshold),
                                     "Passed", "Filtered Out")), position = "jitter")+
       scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
       theme_bw()+
       labs(title = "log10(Gene Variance) vs. Ranked Median Counts",
-           color = "Genes Passing Variance Filter")
+           color = "Genes Passing Variance and Counts Filters")
 
     med_zeros_scatter <- ggplot(result_tib, aes(x = ranked_medians, y = sum_zero_counts))+
-      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) > count_filter ,
+      geom_point(aes(color = ifelse(rowSums(count_info_data != 0) >= count_filter &
+                                      apply(count_info_data, 1, function(row) var(row) >= var_threshold),
                                     "Passed", "Filtered Out")), position = "jitter")+
       scale_color_manual(values = c("Filtered Out" = color_2, "Passed"= color_1))+
       theme_bw()+
       labs(title = "Sum of Zero Count Samples vs. Ranked Median Counts",
-           color = "Genes Passing Counts Filter")
+           color = "Genes Passing Variance and Counts Filters")
 
     med_var_scatter / med_zeros_scatter #create figure with both scatter plots
 
@@ -556,13 +580,29 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
 
 #  filtering step, convert to matrix, do log10 transformation
 
+  
+  #filtering step
+  
+  #calculate row/gene variances
+  
+  gene_variances <- apply(count_info_data, 1, var)
+  
+  #convert slider value to probability value between 0 and 1
+  
+  var_filter_prob <- var_filter/100 
+  
+  #calculate variance threshold
+  
+  var_threshold <- quantile(gene_variances, var_filter_prob)
+  
   filtered_counts <- count_info_data %>%
-
+    
     filter(
-      rowSums(count_info_data != 0) >= count_filter &
-        apply(count_info_data, 1, function(row) var(row) >= var_filter)
-
-    ) 
+      rowSums(. != 0) >= count_filter &
+        apply(., 1, function(row) var(row) >= var_threshold)
+      
+      
+    )
 
   
   # Extract the counts matrix without row names and column names
@@ -572,7 +612,7 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
   log10_filtered_matrix <- log10(1 + counts_matrix)
   
   # Add back row names and column names to the log10-transformed matrix
-  rownames(log10_filtered_matrix) <- filtered_counts$gene_column_name  # Replace 'gene_column_name' with the actual column name
+  rownames(log10_filtered_matrix) <- rownames(filtered_counts)  
   colnames(log10_filtered_matrix) <- colnames(counts_matrix)
   
   #make heatmap
@@ -585,7 +625,7 @@ counts_filtered_heatmap <- function(count_info_data, var_filter, count_filter) {
 
             sepwidth = c(0.2, 0.2),         # Set width for column separations
             margins = c(10, 5),             # Adjust top and bottom margins
-            main = "Heatmap of Counts",     # Add a main title
+            main = "Heatmap of Log10-Transformed Counts",     # Add a main title
             cex.main = 2 ,                   # Set main title font size
             key.xlab = "Samples",
             key.ylab = "Genes"
